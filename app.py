@@ -9,7 +9,7 @@ from sketch_ui import SketchTab
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Formatki — kalkulator arkusza")
+        self.title("Formatki — kalkulator arkusza (wersja lokalna)")
         self.geometry("1200x860")
         self.minsize(950, 800)
         self.layout = None

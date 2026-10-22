@@ -1,27 +1,16 @@
 """Wspomagane odtwarzanie szkicu: użytkownik określa typ i wymiary."""
 from math import ceil
 from pathlib import Path
-import os
-import queue
-import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from sketch import build_shape, LABELS, preview_png
 from irregular import NestResult, export_pdf
-from sketch_ai import read_sketch, DEFAULT_MODEL
 
 
 class SketchTab(ttk.Frame):
     def __init__(self, parent, on_accept):
         super().__init__(parent)
         self.on_accept = on_accept
-        self.revision = 0
-        self.ai_busy = False
-        self.ai_messages = queue.Queue()
-        self.api_key = os.environ.get('FORMATKI_OPENAI_API_KEY') or os.environ.get('OPENAI_API_KEY', '')
-        self.ai_model = DEFAULT_MODEL
-        self.ai_report = 'Nie wykonywano odczytu AI.'
-
         self.model = None
         self.source_path = None
         self.rotation = 0
@@ -44,13 +33,6 @@ class SketchTab(ttk.Frame):
         self.source_label.pack(anchor='w')
         self.rotate_source = ttk.Button(panel, text='Obróć podgląd szkicu o 90°', command=self.rotate_preview, state='disabled')
         self.rotate_source.pack(fill='x', pady=3)
-        ttk.Button(panel, text='Ustawienia AI / klucz dostępu', command=self.ai_settings).pack(fill='x', pady=3)
-        self.ai_button = ttk.Button(panel, text='Odczytaj szkic przez OpenAI', command=self.read_ai, state='disabled')
-        self.ai_button.pack(fill='x', pady=3)
-        ttk.Label(panel, text='Wysyła podgląd pierwszej strony do OpenAI. Wymaga internetu i środków na koncie API. Wynik zawsze sprawdź.', wraplength=310).pack(anchor='w')
-        self.ai_status = ttk.Label(panel, text='AI: brak odczytu.', wraplength=310)
-        self.ai_status.pack(anchor='w', pady=2)
-        ttk.Button(panel, text='Pokaż odczyt AI i niejasności', command=self.show_report).pack(fill='x', pady=3)
         ttk.Label(panel, text='Typ kształtu (wybierz na podstawie szkicu):').pack(anchor='w', pady=(8, 2))
         self.kind = ttk.Combobox(panel, state='readonly', values=('U', 'L', 'Prostokąt'))
         self.kind.set('U')
@@ -88,7 +70,6 @@ class SketchTab(ttk.Frame):
         self.canvas.pack(fill='both', expand=True)
         self.canvas.bind('<Configure>', lambda _: self.draw())
         self.refresh_fields()
-        self.after(100, self.poll_ai)
 
     def refresh_fields(self, event=None):
         kind = self.kind.get()
@@ -102,7 +83,6 @@ class SketchTab(ttk.Frame):
         self.invalidate()
 
     def invalidate(self, *args):
-        self.revision += 1
         self.model = None
         if hasattr(self, 'confirm'):
             self.confirm.set(False)
@@ -123,13 +103,10 @@ class SketchTab(ttk.Frame):
         self.source_path, self.source_image = path, image
         self.rotation = 0
         self.rotate_source.config(state="normal")
-        self.ai_button.config(state='disabled' if self.ai_busy else 'normal')
-        self.ai_report = 'Nie wykonywano odczytu AI dla tego szkicu.'
-        self.ai_status.config(text='AI: wczytano nowy szkic; poprzedni odczyt nie obowiązuje.')
         for variable in self.values.values():
             variable.set('')
         self.invalidate()
-        self.source_label.config(text=f'{Path(path).name}\nWpisz typ i wymiary lub użyj przycisku odczytu AI. AI nie zatwierdza konturu.')
+        self.source_label.config(text=f'{Path(path).name}\nTyp i wymiary wpisz ze szkicu. Ta wersja nie rozpoznaje automatycznie pisma ani typu kształtu.')
         self.draw_source()
 
     def rotate_preview(self):
@@ -144,99 +121,6 @@ class SketchTab(ttk.Frame):
         self.rotation, self.source_image = rotation, image
         self.invalidate()
         self.draw_source()
-
-    def ai_settings(self):
-        dialog = tk.Toplevel(self)
-        dialog.title('OpenAI API — ustawienia tej sesji')
-        dialog.transient(self.winfo_toplevel())
-        frame = ttk.Frame(dialog, padding=15)
-        frame.pack(fill='both', expand=True)
-        ttk.Label(frame, text='Klucz OpenAI API (nie hasło do ChatGPT):').pack(anchor='w')
-        key = ttk.Entry(frame, show='•', width=55)
-        key.insert(0, self.api_key)
-        key.pack(fill='x', pady=5)
-        ttk.Label(frame, text='Model z obsługą obrazu i Structured Outputs:').pack(anchor='w')
-        model = ttk.Entry(frame)
-        model.insert(0, self.ai_model)
-        model.pack(fill='x', pady=5)
-        ttk.Label(frame, text='Klucz pozostaje w pamięci do zamknięcia aplikacji. Nie jest zapisywany w plikach.\nKorzystanie z API rozliczane jest oddzielnie od abonamentu ChatGPT.', wraplength=420).pack(anchor='w', pady=8)
-        def apply():
-            self.api_key, self.ai_model = key.get().strip(), model.get().strip()
-            dialog.destroy()
-        ttk.Button(frame, text='Zastosuj na tę sesję', command=apply).pack(fill='x')
-        dialog.grab_set()
-
-    def read_ai(self):
-        if self.ai_busy or not self.source_path:
-            return
-        if not self.api_key:
-            self.ai_settings()
-            return
-        try:
-            png = preview_png(self.source_path, self.rotation)
-        except Exception as exc:
-            messagebox.showerror('Podgląd dla AI', str(exc))
-            return
-        key, model = self.api_key, self.ai_model
-        self.ai_busy = True
-        self.ai_button.config(state='disabled')
-        # Żaden poprzedni kontur nie pozostaje zatwierdzony podczas odczytu.
-        self.invalidate()
-        revision = self.revision
-        self.ai_status.config(text='AI odczytuje szkic… zwykle kilkanaście sekund. Limit połączenia: 90 s.')
-        def worker():
-            try:
-                result = read_sketch(png, key, model)
-                self.ai_messages.put((revision, 'ok', result))
-            except ValueError as exc:
-                self.ai_messages.put((revision, 'error', str(exc)))
-            except Exception:
-                # Surowe błędy sieciowe i zawartość żądań nie trafiają do interfejsu.
-                self.ai_messages.put((revision, 'error', 'Nie udało się odczytać szkicu. Spróbuj ponownie lub wpisz wymiary ręcznie.'))
-        threading.Thread(target=worker, daemon=True).start()
-
-    def poll_ai(self):
-        try:
-            revision, status, result = self.ai_messages.get_nowait()
-        except queue.Empty:
-            pass
-        else:
-            self.ai_busy = False
-            self.ai_button.config(state='normal' if self.source_path else 'disabled')
-            if revision != self.revision:
-                self.ai_status.config(text='Odrzucono nieaktualny odczyt AI — szkic lub wymiary zostały zmienione. Możesz odczytać ponownie.')
-            elif status == 'error':
-                self.ai_status.config(text=result)
-                messagebox.showerror('Odczyt AI', result)
-            else:
-                self.ai_report = result.report
-                self.kind.set('' if result.kind == 'Nieznany' else result.kind)
-                self.refresh_fields()
-                for name, variable in self.values.items():
-                    value = result.dimensions.get(name)
-                    variable.set('' if value is None else f'{value:g}')
-                self.ai_status.config(text='Odczytano propozycję. Sprawdź przypisanie wymiarów oraz raport niejasności. Nic nie zostało zatwierdzone.')
-                try:
-                    self.model = build_shape(self.kind.get(), {key: variable.get() for key, variable in self.values.items()})
-                except ValueError as exc:
-                    self.status.config(text=str(exc))
-                else:
-                    self.status.config(text='Kontur z propozycji AI. Porównaj wszystkie wymiary ze szkicem, dopiero potem zatwierdź.')
-                    self.draw()
-                self.show_report()
-        self.after(100, self.poll_ai)
-
-    def show_report(self):
-        dialog = tk.Toplevel(self)
-        dialog.title('Odczyt AI — propozycje i niejasności')
-        dialog.geometry('650x500')
-        text = tk.Text(dialog, wrap='word', padx=12, pady=12)
-        scrollbar = ttk.Scrollbar(dialog, command=text.yview)
-        scrollbar.pack(side='right', fill='y')
-        text.configure(yscrollcommand=scrollbar.set)
-        text.pack(fill='both', expand=True)
-        text.insert('1.0', self.ai_report)
-        text.configure(state='disabled')
 
     def draw_source(self):
         c = self.source_canvas
