@@ -35,6 +35,22 @@ class IrregularTests(unittest.TestCase):
             for contour in restored:
                 self.assertAlmostEqual(contour.area, shapes[0].area, delta=0.02)
 
+    def test_import_ignores_objects_outside_page(self):
+        for rotation in (0, 90):
+            with self.subTest(rotation=rotation), tempfile.TemporaryDirectory() as folder:
+                path = Path(folder) / 'offpage.pdf'
+                with fitz.open() as doc:
+                    page = doc.new_page(width=200, height=300)
+                    page.draw_rect(fitz.Rect(20, 20, 80, 120))
+                    page.draw_rect(fitz.Rect(500, 10, 900, 700))
+                    page.draw_rect(fitz.Rect(100, 200, 220, 400))
+                    page.set_rotation(rotation)
+                    doc.save(path)
+                shapes = read_vector_pdf(path)
+                self.assertEqual(len(shapes), 1)
+                self.assertAlmostEqual(shapes[0].bounds[2], 60 * MM, places=3)
+                self.assertAlmostEqual(shapes[0].bounds[3], 100 * MM, places=3)
+
     def test_spacing_and_margin(self):
         poly = Polygon([(0, 0), (40, 0), (40, 15), (15, 15), (15, 40), (0, 40)])
         result = nest(poly, 130, 100, 3, 7, seconds=3)

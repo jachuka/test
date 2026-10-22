@@ -38,6 +38,10 @@ def read_vector_pdf(path):
         if not len(doc):
             raise ValueError('PDF nie zawiera stron.')
         page = doc[0]
+        # Rysunki PDF są w układzie strony sprzed obrotu. Obiekty poza
+        # CropBox mogą istnieć w pliku, mimo że czytnik ich nie wyświetla.
+        visible = page.rect * page.derotation_matrix
+        visible_area = box(visible.x0 * MM, visible.y0 * MM, visible.x1 * MM, visible.y1 * MM).buffer(0.001)
         if page.get_images() and not page.get_drawings():
             raise ValueError('PDF zawiera obraz. Wybierz import ze skanu.')
         drawings = page.get_drawings()
@@ -76,6 +80,8 @@ def read_vector_pdf(path):
             for points in chains:
                 poly = Polygon([(x * MM, y * MM) for x, y in points])
                 if poly.is_valid and poly.area > 0.01:
+                    if not visible_area.covers(poly):
+                        continue
                     poly = normalize(poly)
                     if not any(poly.equals(old) for old in result):
                         result.append(poly)
