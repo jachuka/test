@@ -70,6 +70,14 @@ Aplikacja szuka Tesseract w PATH oraz standardowych folderach `Tesseract-OCR` w 
 
 Do budowania używaj `Zbuduj_EXE.bat` albo `.venv-build\Scripts\python.exe build_windows.py`. Jeśli Tesseract jest zainstalowany na komputerze budującym, skrypt dołącza jego katalog (program, biblioteki, dane i pliki licencji) do EXE. Powiększa to EXE, ale pozwala używać OCR na innym komputerze bez osobnej instalacji. Bez Tesseract budowany jest EXE z samym wykrywaniem obrysu i pytaniami o wymiary. Dotychczasowe ręczne polecenie PyInstaller nie dołącza Tesseract — na takim komputerze korzystanie z OCR wymaga oddzielnie zainstalowanego silnika. Budowania EXE z Tesseract na Windows nie zweryfikowano w linuksowym środowisku chmurowym.
 
+### Gdy OCR dopasowuje 0 wymiarów
+
+Otwórz **Diagnostyka OCR — pokaż przyczynę** po odczycie szkicu. Raport rozróżnia: brak Tesseract, błąd jego uruchomienia (np. blokada pliku lub brak DLL), brak języka `eng`, błąd odczytu, udany odczyt bez rozpoznanych cyfr oraz rozpoznane cyfry bez dopasowania do linii wymiarowych. Pokazuje ścieżkę i wersję silnika, dostępne języki, liczbę prób i odczytane wartości z ocenami OCR. Możesz zapisać raport do lokalnego pliku TXT.
+
+Jeśli Tesseract jest zainstalowany w niestandardowym folderze, użyj **Wskaż zainstalowany tesseract.exe** i ponów odczyt. Ten wybór obowiązuje w bieżącej sesji. Samo wykrycie pliku EXE nie oznacza, że silnik działa — aplikacja sprawdza jego uruchomienie i język angielski przed analizą obrazu. Błędy procesu nie są już ukrywane jako zwykły wynik „0 wymiarów”.
+
+Na komputerze testowym był zainstalowany Tesseract 5.5.0 z językiem `eng`. Wynik 2 dopasowanych wymiarów dla BPV300 dotyczy tej konfiguracji. Bez silnika program wykrywa narożniki, ale nie odczytuje żadnych cyfr. Inna wersja Tesseract lub danych językowych może również dawać inny wynik.
+
 ### Ręczna korekta i dowolny kontur wielokątny
 
 Możesz wyłączyć automatyczny odczyt i wskazać narożniki ręcznie. Obsługiwane są odcinki poziome, pionowe i skośne oraz wklęsłości, maksymalnie 500 narożników. Edytor nie odtwarza dokładnych łuków ani otworów; dla krzywych użyj importu konturu wektorowego PDF.

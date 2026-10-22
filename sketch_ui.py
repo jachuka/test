@@ -7,7 +7,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from sketch import build_contour, preview_png
 from irregular import NestResult, export_pdf
-from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension
+from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report
 
 
 class SketchTab(ttk.Frame):
@@ -21,6 +21,8 @@ class SketchTab(ttk.Frame):
         self.detection = None
         self.auto_words = []
         self.ocr_available = False
+        self.ocr_diagnostics = {}
+        self.tesseract_override = None
         self.auto_questions = []
         self.question_relation = None
 
@@ -60,6 +62,8 @@ class SketchTab(ttk.Frame):
         self.detected_choice.bind('<<ComboboxSelected>>', self.choose_detection)
         self.auto_status = ttk.Label(panel, text='Obrys działa bez dodatkowych instalacji. OCR wymaga lokalnego Tesseract. Dane nie są wysyłane.', wraplength=325)
         self.auto_status.pack(anchor='w', pady=3)
+        ttk.Button(panel,text='Diagnostyka OCR — pokaż przyczynę',command=self.show_ocr_diagnostics).pack(fill='x',pady=2)
+        ttk.Button(panel,text='Wskaż zainstalowany tesseract.exe',command=self.choose_tesseract).pack(fill='x',pady=2)
         ttk.Button(panel, text='Uzupełnij tylko brakujące wymiary', command=self.ask_missing).pack(fill='x', pady=3)
         ttk.Label(panel, text='1. Klikaj narożniki po obwodzie (bez powtarzania pierwszego).\n2. Zamknij kontur.\n3. Wpisz różnice współrzędnych w mm lub wymiary między punktami.', wraplength=325).pack(anchor='w', pady=7)
         self.orthogonal = tk.BooleanVar(value=True)
@@ -136,6 +140,7 @@ class SketchTab(ttk.Frame):
             self.auto_read()
 
     def reset(self):
+        self.ocr_diagnostics = {}
         self.points = []
         self.auto_questions = []
         self.question_relation = None
@@ -161,7 +166,7 @@ class SketchTab(ttk.Frame):
             png=preview_png(self.source_path,self.rotation)
         except Exception as exc:
             messagebox.showerror('Odczyt szkicu',str(exc));return
-        executable=find_tesseract()
+        executable=self.tesseract_override or find_tesseract()
         self.ocr_available=bool(executable)
         self.invalidate()
         version=self.version
@@ -171,15 +176,16 @@ class SketchTab(ttk.Frame):
         def worker():
             try:
                 detection=detect_contours(png)
-                words=ocr_numbers(detection.mask,executable) if executable else []
-                self.auto_queue.put((version,detection,words,None))
+                diagnostics={}
+                words=ocr_numbers(detection.mask,executable,diagnostics=diagnostics)
+                self.auto_queue.put((version,detection,words,None,diagnostics))
             except Exception as exc:
-                self.auto_queue.put((version,None,[],str(exc)))
+                self.auto_queue.put((version,None,[],str(exc),{}))
         threading.Thread(target=worker,daemon=True).start()
 
     def poll_auto(self):
         try:
-            version,detection,words,error=self.auto_queue.get_nowait()
+            version,detection,words,error,diagnostics=self.auto_queue.get_nowait()
         except queue.Empty:
             pass
         else:
@@ -191,6 +197,7 @@ class SketchTab(ttk.Frame):
                 self.auto_status.config(text=error)
                 messagebox.showerror('Lokalny odczyt',error)
             else:
+                self.ocr_diagnostics=diagnostics
                 self.detection,self.auto_words=detection,words
                 self.detected_choice.config(state='readonly',values=[f'Obrys {i+1} — {len(points)} narożników' for i,points in enumerate(detection.contours)])
                 self.detected_choice.current(0)
@@ -211,10 +218,52 @@ class SketchTab(ttk.Frame):
         accepted,self.auto_questions=match_dimensions(self.points,self.detection.mask,self.auto_words)
         self.extra=extra+accepted
         self.render_edges();self.render_extra();self.invalidate();self.draw_source()
-        ocr_note=' Brak Tesseract — cyfry trzeba uzupełnić.' if not self.ocr_available else (' OCR nie odczytał cyfr.' if not self.auto_words else '')
+        self.ocr_diagnostics.update(matched=len(accepted),uncertain=len(self.auto_questions))
+        status=self.ocr_diagnostics.get('status')
+        if status in ('not_installed','launch_failure','missing_eng','run_failure'):
+            ocr_note=' OCR nie działa — otwórz diagnostykę, aby zobaczyć przyczynę.'
+        elif status=='partial':
+            ocr_note=' Część prób OCR zakończyła się błędem — szczegóły są w diagnostyce.'
+        elif not self.auto_words:
+            ocr_note=' OCR wykonał odczyt, ale nie rozpoznał cyfr.'
+        elif not accepted:
+            ocr_note=f' OCR rozpoznał {len(self.auto_words)} liczb, ale nie dopasował pewnych wymiarów.'
+        else:
+            ocr_note=''
         self.auto_status.config(text=f'Wykryto {len(self.points)} narożników. OCR dopasował {len(accepted)} wymiarów; niepewne: {len(self.auto_questions)}.{ocr_note} Sprawdź czerwony obrys, potem uzupełnij tylko brakujące wymiary.')
         # Obrys musi być sprawdzony przed użyciem: użytkownik wybiera, kiedy
         # rozpocząć pytania, aby nie ukrywać czerwonego podglądu dialogiem.
+
+    def choose_tesseract(self):
+        path=filedialog.askopenfilename(title='Wskaż tesseract.exe',filetypes=[('Tesseract','tesseract.exe')])
+        if not path:
+            return
+        if Path(path).name.lower()!='tesseract.exe':
+            messagebox.showerror('Silnik OCR','Wskaż plik o nazwie tesseract.exe z instalacji Tesseract OCR.')
+            return
+        self.tesseract_override=Path(path)
+        self.auto_status.config(text='Wybrano Tesseract. Ponów odczyt szkicu, aby sprawdzić silnik i język eng.')
+
+    def show_ocr_diagnostics(self):
+        dialog=tk.Toplevel(self)
+        dialog.title('Diagnostyka lokalnego OCR')
+        dialog.geometry('700x500')
+        text=tk.Text(dialog,wrap='word',padx=12,pady=12)
+        scrollbar=ttk.Scrollbar(dialog,command=text.yview)
+        scrollbar.pack(side='right',fill='y')
+        text.configure(yscrollcommand=scrollbar.set)
+        text.pack(fill='both',expand=True)
+        report=format_ocr_report(self.ocr_diagnostics)
+        text.insert('1.0',report)
+        text.configure(state='disabled')
+        def save():
+            path=filedialog.asksaveasfilename(defaultextension='.txt',initialfile='Diagnostyka_OCR.txt',filetypes=[('Raport tekstowy','*.txt')])
+            if path:
+                try:
+                    Path(path).write_text(report,encoding='utf-8')
+                except OSError as exc:
+                    messagebox.showerror('Zapis raportu',str(exc),parent=dialog)
+        ttk.Button(dialog,text='Zapisz raport do pliku',command=save).pack(fill='x')
 
     def current_edges(self):
         return [dict(dx=dx.get(),dy=dy.get()) for dx,dy in self.edge_values]

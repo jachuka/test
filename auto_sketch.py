@@ -190,7 +190,70 @@ class OCRWord:
     bounds: tuple
 
 
-def ocr_numbers(mask, executable):
+def inspect_tesseract(executable):
+    report=dict(available=bool(executable),executable=str(executable) if executable else '',version='',languages=[],errors=[],attempts=0,successful=0,words=0,status='not_installed')
+    if not executable:
+        return report
+    environment=os.environ.copy()
+    tessdata=Path(executable).parent/'tessdata'
+    if tessdata.is_dir():
+        environment['TESSDATA_PREFIX']=str(tessdata)
+    for option in ('--version','--list-langs'):
+        try:
+            process=subprocess.run([str(executable),option],capture_output=True,timeout=10,env=environment,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        except (OSError,subprocess.TimeoutExpired) as exc:
+            report['status']='launch_failure'
+            report['errors'].append(str(exc)[:1500])
+            return report
+        stdout=process.stdout.decode('utf-8',errors='replace')
+        stderr=process.stderr.decode('utf-8',errors='replace')
+        if process.returncode!=0:
+            report['status']='launch_failure'
+            report['errors'].append(f'{option}: kod {process.returncode}. '+(stderr or stdout)[:1500])
+            return report
+        if option=='--version':
+            report['version']=(stdout or stderr).splitlines()[0] if (stdout or stderr).splitlines() else 'brak informacji'
+        else:
+            report['languages']=[line.strip() for line in stdout.splitlines() if line.strip() and not line.startswith('List of available languages')]
+    if 'eng' not in report['languages']:
+        report['status']='missing_eng'
+        report['errors'].append('Brak danych języka angielskiego eng.traineddata. Doinstaluj język eng w Tesseract.')
+    else:
+        report['status']='ready'
+    return report
+
+
+def format_ocr_report(report):
+    states={'not_installed':'Nie znaleziono Tesseract. Wykrywanie obrysu działa, ale OCR cyfr nie został uruchomiony.',
+            'launch_failure':'Nie udało się uruchomić Tesseract. Sprawdź błąd poniżej.',
+            'missing_eng':'Tesseract jest dostępny, ale brakuje modelu języka eng.',
+            'ready':'Tesseract jest gotowy do odczytu.',
+            'run_failure':'Próby odczytu zakończyły się błędem.',
+            'no_digits':'OCR wykonał odczyt, ale nie rozpoznał cyfr z wymaganą oceną.',
+            'read':'OCR rozpoznał cyfry. Ich dopasowanie do wymiarów to oddzielny etap.',
+            'partial':'Część prób OCR zakończyła się błędem.'}
+    lines=[states.get(report.get('status'),'Nie wykonano jeszcze odczytu OCR.'),
+           'Silnik: '+(report.get('executable') or 'brak'),
+           'Wersja: '+(report.get('version') or 'nieustalona'),
+           'Języki: '+(', '.join(report.get('languages',[])) or 'nieustalone'),
+           f"Próby: {report.get('attempts',0)}; udane: {report.get('successful',0)}; liczby: {report.get('words',0)}"]
+    lines.extend(report.get('errors',[]))
+    if report.get('numbers'):
+        lines.append('Odczytane liczby (ocena OCR, nie prawdopodobieństwo poprawności):')
+        lines.extend(f"{value:g} — {confidence:.1f}" for value,confidence in report['numbers'])
+    if 'matched' in report:
+        lines.append(f"Dopasowane wymiary: {report['matched']}; niepewne dopasowania: {report['uncertain']}")
+    return '\n'.join(lines)
+
+
+def ocr_numbers(mask, executable, diagnostics=None):
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(inspect_tesseract(executable))
+        if diagnostics['status']!='ready':
+            return []
+    elif executable is None:
+        return []
     words=[]
     h,w=mask.shape
     with tempfile.TemporaryDirectory(prefix='formatki-ocr-') as folder:
@@ -202,12 +265,20 @@ def ocr_numbers(mask, executable):
             tessdata=Path(executable).parent/'tessdata'
             if tessdata.is_dir():
                 environment['TESSDATA_PREFIX']=str(tessdata)
+            if diagnostics is not None:
+                diagnostics['attempts']+=1
             try:
                 process=subprocess.run([str(executable),str(path),'stdout','--psm','11','-l','eng','tsv'],capture_output=True,timeout=20,env=environment,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            except (OSError,subprocess.TimeoutExpired):
+            except (OSError,subprocess.TimeoutExpired) as exc:
+                if diagnostics is not None:
+                    diagnostics['errors'].append(f'Obrót {rotation*90}°: '+str(exc)[:1500])
                 continue
             if process.returncode!=0:
+                if diagnostics is not None:
+                    diagnostics['errors'].append(f'Obrót {rotation*90}°: kod {process.returncode}. '+process.stderr.decode('utf-8',errors='replace')[:1500])
                 continue
+            if diagnostics is not None:
+                diagnostics['successful']+=1
             for row in csv.DictReader(io.StringIO(process.stdout.decode('utf-8',errors='replace')),delimiter='\t'):
                 text=row.get('text','').strip()
                 if not re.fullmatch(r'\d{1,5}(?:[.,]\d{1,3})?',text):
@@ -229,6 +300,12 @@ def ocr_numbers(mask, executable):
                 corners=[original(*p) for p in corners]
                 bounds=(min(p[0] for p in corners),min(p[1] for p in corners),max(p[0] for p in corners),max(p[1] for p in corners))
                 words.append(OCRWord(value,confidence,bounds))
+    if diagnostics is not None:
+        diagnostics['words']=len(words)
+        diagnostics['numbers']=[(word.value,word.confidence) for word in words]
+        diagnostics['status']='partial' if diagnostics['errors'] else ('read' if words else 'no_digits')
+        if diagnostics['successful']==0:
+            diagnostics['status']='run_failure'
     return words
 
 

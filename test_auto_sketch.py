@@ -94,6 +94,49 @@ class AutoSketchTests(unittest.TestCase):
         run.side_effect=subprocess.TimeoutExpired('tesseract',20)
         self.assertEqual(ocr_numbers(np.zeros((100,120),dtype=bool),Path('/tmp/tesseract-test')),[])
 
+    @patch('auto_sketch.subprocess.run')
+    def test_missing_engine_is_distinct_from_zero_digits(self,run):
+        from auto_sketch import format_ocr_report
+        report={}
+        self.assertEqual(ocr_numbers(np.zeros((10,10),dtype=bool),None,diagnostics=report),[])
+        self.assertEqual(report['status'],'not_installed')
+        self.assertIn('nie został uruchomiony',format_ocr_report(report))
+        run.assert_not_called()
+
+    @patch('auto_sketch.subprocess.run')
+    def test_missing_english_language_is_reported(self,run):
+        run.side_effect=[subprocess.CompletedProcess([],0,b'tesseract 5.5.0',b''),subprocess.CompletedProcess([],0,b'List of available languages (1):\npol\n',b'')]
+        report={}
+        self.assertEqual(ocr_numbers(np.zeros((10,10),dtype=bool),Path('/tmp/tesseract-test'),diagnostics=report),[])
+        self.assertEqual(report['status'],'missing_eng')
+        self.assertEqual(run.call_count,2)
+        self.assertIn('eng.traineddata',report['errors'][0])
+
+    @patch('auto_sketch.subprocess.run')
+    def test_windows_launch_error_is_not_silently_ignored(self,run):
+        run.side_effect=OSError('Zasady kontroli aplikacji zablokowały ten plik')
+        report={}
+        self.assertEqual(ocr_numbers(np.zeros((10,10),dtype=bool),Path('/tmp/tesseract-test'),diagnostics=report),[])
+        self.assertEqual(report['status'],'launch_failure')
+        self.assertIn('zablokowały',report['errors'][0])
+
+    @patch('auto_sketch.subprocess.run')
+    def test_successful_ocr_with_no_digits_is_reported(self,run):
+        run.side_effect=[subprocess.CompletedProcess([],0,b'tesseract 5.5.0',b''),subprocess.CompletedProcess([],0,b'List of available languages (1):\neng\n',b'')]+[subprocess.CompletedProcess([],0,b'level\ttext\n',b'') for _ in range(4)]
+        report={}
+        self.assertEqual(ocr_numbers(np.zeros((10,10),dtype=bool),Path('/tmp/tesseract-test'),diagnostics=report),[])
+        self.assertEqual(report['status'],'no_digits')
+        self.assertEqual(report['successful'],4)
+
+    @patch('auto_sketch.subprocess.run')
+    def test_nonzero_ocr_exit_is_reported(self,run):
+        run.side_effect=[subprocess.CompletedProcess([],0,b'tesseract 5.5.0',b''),subprocess.CompletedProcess([],0,b'List of available languages (1):\neng\n',b'')]+[subprocess.CompletedProcess([],1,b'',b'Failed loading language eng') for _ in range(4)]
+        report={}
+        self.assertEqual(ocr_numbers(np.zeros((10,10),dtype=bool),Path('/tmp/tesseract-test'),diagnostics=report),[])
+        self.assertEqual(report['status'],'run_failure')
+        self.assertEqual(report['successful'],0)
+        self.assertEqual(len(report['errors']),4)
+
 
 if __name__=='__main__':
     unittest.main()
