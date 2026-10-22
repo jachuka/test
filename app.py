@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from packing import calculate
 from irregular_ui import IrregularTab
+from sketch_ui import SketchTab
 
 
 class App(tk.Tk):
@@ -17,7 +18,15 @@ class App(tk.Tk):
         tabs.pack(fill="both", expand=True)
         rectangles = ttk.Frame(tabs)
         tabs.add(rectangles, text="Prostokąty")
-        tabs.add(IrregularTab(tabs), text="Kształty nieregularne / PDF")
+        irregular = IrregularTab(tabs)
+        tabs.add(irregular, text="Kształty nieregularne / PDF")
+        def use_sketch(poly):
+            if irregular.busy:
+                messagebox.showinfo("Trwa układanie", "Zakończ lub przerwij bieżące układanie, a potem zatwierdź szkic ponownie.")
+                return
+            irregular.loaded([poly], "Zatwierdzony kontur ze szkicu", False)
+            tabs.select(irregular)
+        tabs.add(SketchTab(tabs, use_sketch), text="Szkic → kontur")
         panel = ttk.Frame(rectangles, padding=20)
         panel.pack(side="left", fill="y")
         ttk.Label(panel, text="Kalkulator formatek", font=("Arial", 18, "bold")).pack(anchor="w", pady=(0, 20))

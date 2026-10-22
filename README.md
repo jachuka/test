@@ -1,6 +1,6 @@
 # Kalkulator formatek
 
-Desktopowa aplikacja dla Windows, z polskim interfejsem. Dwa tryby: prostokąty oraz powielanie jednego nieregularnego obrysu. Domyślny arkusz: 3050 × 2050 mm. Wszystkie wymiary w mm, akceptowany przecinek dziesiętny.
+Desktopowa aplikacja dla Windows, z polskim interfejsem. Trzy tryby: prostokąty, powielanie jednego nieregularnego obrysu oraz wspomagane odtworzenie konturu z wymiarów szkicu. Domyślny arkusz: 3050 × 2050 mm. Wszystkie wymiary w mm, akceptowany przecinek dziesiętny.
 
 ## Uruchomienie z Pythona
 
@@ -46,6 +46,21 @@ Wprowadź wymiary arkusza i jednej formatki, odstęp między krawędziami i marg
 Układanie używa geometrii obrysów i sprawdza kolizje oraz odstęp, zamiast traktować każdy obrys jako prostokąt. Jest heurystyczne: nie gwarantuje największej możliwej liczby. Krzywe są przybliżane odcinkami z tolerancją 0,05 mm; dla odstępu stosowany jest dodatkowy zapas 0,1 mm. Otwory są traktowane jako pełny materiał; nie są eksportowane jako wycięcia. Skan jest aproksymacją obrysu, nie dokładnym plikiem produkcyjnym. Przed cięciem zweryfikuj wymiary i geometrię w swoim programie produkcyjnym. W odstępie uwzględnij szerokość cięcia.
 
 Obsługa wielu różnych formatek z zadanymi ilościami, otworów i dowolnych kątów obrotu nie jest częścią tej wersji.
+
+## Szkic → kontur
+
+Nowa zakładka odtwarza dokładną geometrię **z wpisanych wymiarów**, bez mierzenia proporcji obrazka. Obsługiwane typy: U, L i prostokąt. Jest to tryb wspomagany: **nie rozpoznaje automatycznie pisma odręcznego, wymiarów ani rodzaju figury**. Pozostałe kształty nadal wymagają przygotowanego konturu PDF. Nie wymaga nowych bibliotek ani połączenia z usługą zewnętrzną.
+
+1. Wczytaj szkic PDF (pierwsza strona) lub obraz PNG/JPG/BMP. Pokazuje się jako odniesienie; podgląd można obracać o 90°. Skala skanu nie jest używana do obliczeń. Wczytanie innego pliku czyści poprzednie wymiary i zatwierdzenie.
+2. Wybierz typ figury i przypisz wymiary ze szkicu do opisanych pól. Szerokość i wysokość są zawsze **zewnętrzne**. Dla U poprzeczka znajduje się u góry, a ramiona są skierowane w dół. Dla L poprzeczka jest u góry, a ramię po lewej; orientację konturu podczas układania można zmieniać dotychczasowym przełącznikiem obrotów.
+3. Pola są początkowo puste. Nieczytelne wymiary trzeba wyjaśnić z klientem i wpisać. Wymiary wycięcia mogą pozostać puste, jeśli da się je wyliczyć z innych podanych wymiarów. Program stosuje wyłącznie relacje wymiarowe: dla U szerokość wycięcia = szerokość zewnętrzna − lewe ramię − prawe ramię; głębokość wycięcia = wysokość zewnętrzna − poprzeczka. Można też podać wymiary wycięcia i wyliczyć brakujący wymiar zewnętrzny. Program nie przyjmuje żadnej wartości na podstawie wyglądu szkicu.
+4. Kliknij **Zbuduj i sprawdź kontur**. Brak danych albo sprzeczność zatrzymuje budowanie. Nadmiarowe wymiary muszą zgadzać się w granicach 0,001 mm.
+5. Porównaj kontur i etykiety wymiarów ze szkicem. Zaznacz **Potwierdzam kształt i wymiary**. Każda zmiana danych unieważnia kontur i zatwierdzenie.
+6. Kliknij **Zatwierdź i przejdź do układania**, żeby użyć konturu w trybie nieregularnym. Alternatywnie zapisz sam kontur jako PDF 1:1, bez opisów i linii wymiarowych.
+
+Przykład BV300: U, szerokość zewnętrzna 440, wysokość zewnętrzna 160, poprzeczka 30, lewe ramię 30, prawe ramię 60 mm. Wynik: wycięcie 350 × 130 mm, pole materiału 24 900 mm². Podanie przy tym głębokości wycięcia 160 mm jest sprzeczne i zostaje odrzucone. Ten kontur porównano z poprawnym PDF użytkownika: odchylenie poniżej 0,001 mm.
+
+Automatyczne rozpoznawanie odręcznych szkiców i przypisywanie odczytanych wymiarów pozostaje osobnym, niewdrożonym elementem. Obecny tryb pozwala zbudować i zweryfikować kontur bez ręcznego rysowania w programie graficznym.
 
 ## Weryfikacja
 
