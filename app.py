@@ -16,7 +16,7 @@ class App(tk.Tk):
         panel.pack(side="left", fill="y")
         ttk.Label(panel, text="Kalkulator formatek", font=("Arial", 18, "bold")).pack(anchor="w", pady=(0, 20))
         self.fields = []
-        for label, default in (("Szerokość arkusza [mm]", "2000"), ("Wysokość arkusza [mm]", "1000"), ("Szerokość formatki [mm]", "300"), ("Wysokość formatki [mm]", "200"), ("Odstęp między formatkami [mm]", "5"), ("Margines od każdego brzegu [mm]", "10")):
+        for label, default in (("Szerokość arkusza [mm]", "3050"), ("Wysokość arkusza [mm]", "2050"), ("Szerokość formatki [mm]", "300"), ("Wysokość formatki [mm]", "200"), ("Odstęp między formatkami [mm]", "5"), ("Margines od każdego brzegu [mm]", "10")):
             ttk.Label(panel, text=label).pack(anchor="w", pady=(8, 3))
             entry = ttk.Entry(panel, width=30)
             entry.insert(0, default)
