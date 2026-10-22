@@ -137,6 +137,45 @@ class AutoSketchTests(unittest.TestCase):
         self.assertEqual(report['successful'],0)
         self.assertEqual(len(report['errors']),4)
 
+    def test_unread_number_targets_actual_arrow_line(self):
+        from auto_sketch import unread_dimension_lines
+        points=[(100,100),(400,100),(400,300),(100,300)]
+        mask=np.zeros((420,500),dtype=bool)
+        mask[330,100:401]=True
+        # Dwa groty wzdłuż rzeczywistej linii wymiarowej.
+        for offset in range(2,10):
+            half=max(2,offset//2)
+            mask[330-half:331+half,100+offset]=True
+            mask[330-half:331+half,400-offset]=True
+        # Krawędź konturu nie powinna być traktowana jako napis wymiarowy.
+        mask[100,100:401]=True
+        accepted,questions=match_dimensions(points,mask,[])
+        self.assertEqual(accepted,[])
+        self.assertEqual(len(questions),1)
+        question=questions[0]
+        self.assertEqual(question['source'],'unread_label')
+        self.assertIsNone(question['value'])
+        self.assertAlmostEqual(question['image_line'][1],330,delta=2)
+        self.assertEqual(question['start'],3)
+        self.assertEqual(question['end'],2)
+
+    def test_uncertain_ocr_keeps_label_and_line_location(self):
+        points=[(100,100),(400,100),(400,300),(100,300)]
+        mask=np.zeros((420,500),dtype=bool);mask[330,100:401]=True
+        _,questions=match_dimensions(points,mask,[OCRWord(300,55,(235,340,265,355))])
+        self.assertEqual(questions[0]['label_bounds'],(235,340,265,355))
+        self.assertEqual(questions[0]['image_line'],(100.,330.,400.,330.))
+        self.assertEqual(questions[0]['source'],'uncertain_ocr')
+
+    def test_question_crop_is_real_source_pixels(self):
+        from auto_sketch import question_crop
+        png=drawing([(50,50),(450,50),(450,350),(50,350)])
+        crop=question_crop(png,dict(label_bounds=(50,50,80,70)))
+        pix=fitz.Pixmap(crop)
+        self.assertGreater(pix.width,0);self.assertLess(pix.width,500)
+        self.assertTrue(any(value<100 for value in pix.samples))
+        self.assertIsNone(question_crop(png,{}))
+
 
 if __name__=='__main__':
     unittest.main()

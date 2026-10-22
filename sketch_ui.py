@@ -1,13 +1,60 @@
 """Edytor dowolnego konturu wielokątnego ze szkicu, wyłącznie lokalny."""
 import queue
 import threading
-from math import ceil, isfinite
+from math import ceil, isfinite, hypot
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from sketch import build_contour, preview_png
 from irregular import NestResult, export_pdf
-from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report
+from preferences import save_tesseract
+from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report, question_crop
+
+
+class DimensionQuestion(simpledialog.Dialog):
+    def __init__(self,parent,title,prompt,png=None,initial=None):
+        self.prompt=prompt
+        self.png=png
+        self.initial=initial
+        self.owner=parent.winfo_toplevel()
+        super().__init__(self.owner,title)
+
+    def body(self,master):
+        ttk.Label(master,text=self.prompt,wraplength=450).pack(anchor='w',pady=5)
+        if self.png:
+            self.photo=tk.PhotoImage(data=self.png)
+            factor=max(1,min(3,450//max(1,self.photo.width()),330//max(1,self.photo.height())))
+            self.photo=self.photo.zoom(factor,factor)
+            ttk.Label(master,image=self.photo).pack(pady=8)
+            ttk.Label(master,text='Fragment szkicu: niebieska linia i ramka wskazują pytany wymiar.').pack()
+        ttk.Label(master,text='Wartość w milimetrach:').pack(anchor='w',pady=(8,2))
+        self.entry=ttk.Entry(master)
+        if self.initial is not None:
+            self.entry.insert(0,f'{self.initial:g}')
+        self.entry.pack(fill='x')
+        return self.entry
+
+    def wait_visibility(self,window=None):
+        super().wait_visibility(window)
+        self._bring_to_front()
+
+    def _bring_to_front(self):
+        if self.winfo_exists():
+            self.lift(self.owner)
+            self.focus_force()
+            self.entry.focus_set()
+
+    def validate(self):
+        from sketch import number
+        try:
+            value=number(self.entry.get(),'Wymiar')
+            if value is None or value<0:
+                raise ValueError('Wpisz nieujemny wymiar w mm.')
+        except ValueError as exc:
+            messagebox.showerror('Wymiar',str(exc),parent=self)
+            return False
+        self.result=value
+        return True
 
 
 class SketchTab(ttk.Frame):
@@ -112,8 +159,23 @@ class SketchTab(ttk.Frame):
         self.source_canvas.bind('<Configure>', lambda _: self.draw_source())
         self.source_canvas.bind('<Button-1>', self.click)
         ttk.Label(content, text='Kontur obliczony z wymiarów — numeracja jest zgodna ze szkicem').pack(anchor='w', pady=(8, 2))
-        self.canvas = tk.Canvas(content, background='#e9eef4', highlightthickness=0, height=280)
-        self.canvas.pack(fill='both', expand=True)
+        preview=ttk.Frame(content)
+        preview.pack(fill='both',expand=True)
+        preview.rowconfigure(0,weight=1)
+        preview.columnconfigure(0,weight=1)
+        self.canvas = tk.Canvas(preview, background='#e9eef4', highlightthickness=0, height=280)
+        self.canvas.grid(row=0,column=0,sticky='nsew')
+        table_holder=ttk.Frame(preview)
+        table_holder.grid(row=0,column=1,sticky='ns',padx=(8,0))
+        self.edge_table=ttk.Treeview(table_holder,columns=('side','length'),show='headings',height=8)
+        self.edge_table.heading('side',text='Odcinek')
+        self.edge_table.heading('length',text='Długość [mm]')
+        self.edge_table.column('side',width=95,stretch=False)
+        self.edge_table.column('length',width=95,anchor='e',stretch=False)
+        table_scroll=ttk.Scrollbar(table_holder,command=self.edge_table.yview)
+        table_scroll.pack(side='right',fill='y')
+        self.edge_table.configure(yscrollcommand=table_scroll.set)
+        self.edge_table.pack(side='left',fill='y',expand=True)
         self.canvas.bind('<Configure>', lambda _: self.draw())
         self.after(100, self.poll_auto)
 
@@ -258,7 +320,13 @@ class SketchTab(ttk.Frame):
             messagebox.showerror('Silnik OCR','Wskaż plik o nazwie tesseract.exe z instalacji Tesseract OCR.')
             return
         self.tesseract_override=Path(path)
-        self.auto_status.config(text='Wybrano Tesseract. Ponów odczyt szkicu, aby sprawdzić silnik i język eng.')
+        try:
+            save_tesseract(path)
+        except (OSError,ValueError) as exc:
+            self.auto_status.config(text='Wybrano Tesseract na tę sesję, ale nie udało się zapisać ustawienia.')
+            messagebox.showerror('Zapis ustawień',str(exc))
+        else:
+            self.auto_status.config(text='Zapamiętano Tesseract na kolejne uruchomienia. Ponów odczyt szkicu.')
 
     def show_ocr_diagnostics(self):
         dialog=tk.Toplevel(self)
@@ -311,12 +379,18 @@ class SketchTab(ttk.Frame):
                 return
             self.question_relation=question
             self.draw_source();self.update_idletasks()
-            title=f"Wymiar P{question['start']+1} → P{question['end']+1} w osi {question['axis'].upper()}"
-            text='Sprawdź niebieskie oznaczenie na szkicu. Podaj rzeczywistą odległość w mm (nie długość skośną).'
-            if suggestion is not None:
-                text+=f'\nOCR nie jest pewny: odczytał {suggestion:g}. Potwierdź lub popraw.'
-            text+='\nAnuluj pozostawi kontur do dalszego uzupełnienia.'
-            value=simpledialog.askfloat(title,text,initialvalue=suggestion,minvalue=0)
+            title='Uzupełnij wymiar ze szkicu'
+            if question.get('source')=='unread_label':
+                text='Nie udało się odczytać liczby przy podświetlonej linii. Jaki wymiar jest tutaj zapisany?'
+            elif suggestion is not None:
+                text=f'OCR odczytał {suggestion:g} mm, ale wynik nie jest pewny. Potwierdź lub popraw liczbę przy podświetlonej linii.'
+            elif question.get('image_line'):
+                text='OCR podał różne odczyty tej samej linii. Wpisz prawidłowy wymiar ze szkicu.'
+            else:
+                text='Nie znaleziono jednoznacznej linii wymiarowej dla tej odległości. Podaj wymiar wskazany niebieską strzałką, jeśli znasz go ze szkicu, lub anuluj.'
+            text+='\nAnuluj zachowa dotychczasową pracę.'
+            png=question_crop(self.detection.png,question) if self.detection is not None else None
+            value=DimensionQuestion(self,title,text,png=png,initial=suggestion).result
             self.question_relation=None;self.draw_source()
             if value is None:
                 if 'candidates' in question:
@@ -487,11 +561,17 @@ class SketchTab(ttk.Frame):
             c.create_line(*[v for p in line for v in p], fill='#ce302d', width=2)
         if self.question_relation is not None:
             item=self.question_relation
-            a,b=xy[item['start']],xy[item['end']]
-            if item['axis']=='x':
-                line=(a[0],(a[1]+b[1])/2,b[0],(a[1]+b[1])/2)
+            if item.get('image_line'):
+                line=tuple(10+v/factor for v in item['image_line'])
             else:
-                line=((a[0]+b[0])/2,a[1],(a[0]+b[0])/2,b[1])
+                a,b=xy[item['start']],xy[item['end']]
+                if item['axis']=='x':
+                    line=(a[0],(a[1]+b[1])/2,b[0],(a[1]+b[1])/2)
+                else:
+                    line=((a[0]+b[0])/2,a[1],(a[0]+b[0])/2,b[1])
+            if item.get('label_bounds'):
+                bounds=tuple(10+v/factor for v in item['label_bounds'])
+                c.create_rectangle(*bounds,outline='#f09000',width=3)
             c.create_line(*line,fill='#005de0',width=3,arrow='both')
         for i,(x,y) in enumerate(xy):
             c.create_oval(x-3,y-3,x+3,y+3,fill='#ce302d',outline='white')
@@ -520,18 +600,68 @@ class SketchTab(ttk.Frame):
     def draw(self):
         c=self.canvas
         c.delete('all')
+        self.edge_table.delete(*self.edge_table.get_children())
         if self.model is None:
             return
+        from shapely.geometry import Point
         d=self.model.dimensions
         w,h=d['width'],d['height']
-        cw,ch=max(120,c.winfo_width()),max(120,c.winfo_height())
-        scale=max(.001,min((cw-100)/w,(ch-80)/h))
+        cw,ch=max(180,c.winfo_width()),max(180,c.winfo_height())
+        scale=max(.001,min((cw-160)/w,(ch-130)/h))
         ox,oy=(cw-w*scale)/2,(ch-h*scale)/2
-        c.create_polygon(*[v for x,y in self.model.polygon.exterior.coords for v in (ox+x*scale,oy+y*scale)],fill='#71b7dc',outline='#285b79',width=2)
-        for i,(x,y) in enumerate(self.model.vertices):
-            c.create_text(ox+x*scale+5,oy+y*scale-10,text=f'P{i+1}',anchor='w')
-        c.create_text(cw/2,18,text=f'{w:g} × {h:g} mm')
-        c.create_text(cw/2,ch-16,text=f'{len(self.model.vertices)} narożników • pole {self.model.polygon.area:g} mm²')
+        vertices=self.model.vertices
+        screen=[(ox+x*scale,oy+y*scale) for x,y in vertices]
+        c.create_polygon(*[v for p in screen for v in p],fill='#71b7dc',outline='#285b79',width=2)
+        def mm(value):
+            return f'{value:.3f}'.rstrip('0').rstrip('.').replace('.',',')
+        def label(x,y,text,angle=0,tag='dimension'):
+            item=c.create_text(x,y,text=text,angle=angle,fill='#193b54',tags=(tag,))
+            bounds=c.bbox(item)
+            background=c.create_rectangle(bounds,fill='#e9eef4',outline='',tags=('dimension-background',))
+            c.tag_lower(background,item)
+        # Wymiary całkowite poza obrysem.
+        c.create_line(ox,oy-34,ox+w*scale,oy-34,arrow='both',fill='#496779')
+        label(cw/2,oy-45,mm(w)+' mm',tag='overall-dimension')
+        c.create_line(ox-45,oy,ox-45,oy+h*scale,arrow='both',fill='#496779')
+        label(ox-58,ch/2,mm(h)+' mm',angle=90,tag='overall-dimension')
+        covered=set()
+        for i,(x,y) in enumerate(vertices):
+            xx,yy=vertices[(i+1)%len(vertices)]
+            dx,dy=xx-x,yy-y
+            length=hypot(dx,dy)
+            self.edge_table.insert('', 'end',values=(f'P{i+1} → P{(i+1)%len(vertices)+1}',mm(length)))
+            nx,ny=-dy/length,dx/length
+            if self.model.polygon.contains(Point((x+xx)/2+nx*.01,(y+yy)/2+ny*.01)):
+                nx,ny=-nx,-ny
+            ax,ay=screen[i];bx,by=screen[(i+1)%len(screen)]
+            angle=90 if abs(dx)<.001 else 0
+            label((ax+bx)/2+nx*19,(ay+by)/2+ny*19,mm(length),angle=angle,tag='edge-dimension')
+            if abs(dy)<.001:
+                covered.add(('x',round(min(x,xx),3),round(max(x,xx),3)))
+            if abs(dx)<.001:
+                covered.add(('y',round(min(y,yy),3),round(max(y,yy),3)))
+        # Podane wymiary grubości, które nie są długością pojedynczego boku.
+        # Rysuj je pośrodku konturu; jest to pozycja etykiety, nie pomiar skanu.
+        for item in self.extra:
+            if not item['value'] or item['start']>=len(vertices) or item['end']>=len(vertices):
+                continue
+            axis=item['axis'];index=0 if axis=='x' else 1
+            start,end=sorted((vertices[item['start']][index],vertices[item['end']][index]))
+            key=(axis,round(start,3),round(end,3))
+            if key in covered:
+                continue
+            covered.add(key)
+            if axis=='x':
+                line=(ox+start*scale,ch/2,ox+end*scale,ch/2)
+                label((line[0]+line[2])/2,ch/2-12,mm(end-start),tag='given-dimension')
+            else:
+                line=(cw/2,oy+start*scale,cw/2,oy+end*scale)
+                label(cw/2+12,(line[1]+line[3])/2,mm(end-start),angle=90,tag='given-dimension')
+            c.create_line(*line,arrow='both',fill='#496779')
+        for i,(x,y) in enumerate(screen):
+            c.create_text(x+5,y-9,text=f'P{i+1}',anchor='w',fill='#566875',tags=('vertex-label',))
+        area=f'{self.model.polygon.area/1_000_000:.8f}'.rstrip('0').rstrip('.').replace('.',',')
+        c.create_text(cw/2,ch-20,text=f'Pole: {area} m² • długości boków w mm',tags=('area-label',))
 
     def accept(self):
         if self.model and self.confirm.get():

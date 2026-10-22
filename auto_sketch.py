@@ -15,6 +15,7 @@ import pymupdf as fitz
 from shapely.ops import unary_union
 from shapely.geometry import Polygon
 from irregular import trace_silhouettes
+from preferences import saved_tesseract
 
 
 @dataclass
@@ -169,6 +170,9 @@ def topology(points):
 
 
 def find_tesseract():
+    saved=saved_tesseract()
+    if saved is not None:
+        return saved
     candidates=[]
     if getattr(sys,'frozen',False):
         candidates.append(Path(sys._MEIPASS)/'tesseract'/'tesseract.exe')
@@ -324,6 +328,96 @@ def straight_lines(mask):
     return result
 
 
+def line_endpoints(points,axis,start,end,pos):
+    index=0 if axis=='x' else 1
+    ends=[]
+    for target in (start,end):
+        close=[(i,p) for i,p in enumerate(points) if abs(p[index]-target)<=10]
+        if not close:
+            return None
+        ends.append(min(close,key=lambda item:abs(item[1][1-index]-pos))[0])
+    return ends if ends[0]!=ends[1] else None
+
+
+def image_line(axis,pos,start,end):
+    return (start,pos,end,pos) if axis=='x' else (pos,start,pos,end)
+
+
+def dimension_key(points,item):
+    index=0 if item['axis']=='x' else 1
+    a,b=points[item['start']][index],points[item['end']][index]
+    return item['axis'],round(min(a,b),2),round(max(a,b),2)
+
+
+def arrow_at(mask,axis,pos,end,direction):
+    # Sprawdź tusz po obu stronach linii tuż za grotem. Sam długi odcinek
+    # konturu bez dwóch grotów nie jest uznawany za linię wymiarową.
+    rows=mask if axis=='x' else mask.T
+    position,tip=round(pos),round(end)
+    lo,hi=sorted((tip+2*direction,tip+12*direction))
+    lo,hi=max(0,lo),min(rows.shape[1],hi+1)
+    upper=rows[max(0,position-8):max(0,position-1),lo:hi]
+    lower=rows[min(rows.shape[0],position+2):min(rows.shape[0],position+9),lo:hi]
+    return int(upper.sum())>=3 and int(lower.sum())>=3
+
+
+def unread_dimension_lines(points,mask,lines=None):
+    from shapely.geometry import Polygon,Point
+    polygon=Polygon(points)
+    proposals={}
+    for axis,pos,start,end in (straight_lines(mask) if lines is None else lines):
+        # Wyklucz rzeczywiste krawędzie obrysu, również z narożnikami.
+        midpoint=((start+end)/2,pos) if axis=='x' else (pos,(start+end)/2)
+        if polygon.boundary.distance(Point(midpoint))<5:
+            continue
+        ends=line_endpoints(points,axis,start,end,pos)
+        if ends is None or not arrow_at(mask,axis,pos,start,1) or not arrow_at(mask,axis,pos,end,-1):
+            continue
+        item=dict(start=ends[0],end=ends[1],axis=axis,value=None,candidates=[],confidence=None,
+                  image_line=image_line(axis,pos,start,end),label_bounds=None,source='unread_label')
+        key=dimension_key(points,item)
+        # Kilka pikseli grubości tej samej linii daje jedną relację.
+        score=end-start
+        if key not in proposals or score>proposals[key][0]:
+            proposals[key]=(score,item)
+    return [item for _,item in proposals.values()]
+
+
+def question_crop(png,question):
+    """Fragment rzeczywistego napisu albo otoczenia środka wskazanej linii."""
+    bounds=question.get('label_bounds')
+    line=question.get('image_line')
+    if bounds:
+        x0,y0,x1,y1=bounds
+        cx,cy=(x0+x1)/2,(y0+y1)/2
+        halfw,halfh=max(45,(x1-x0)/2+20),max(40,(y1-y0)/2+20)
+    elif line:
+        x0,y0,x1,y1=line
+        cx,cy=(x0+x1)/2,(y0+y1)/2
+        halfw,halfh=95,95
+    else:
+        return None
+    pix=fitz.Pixmap(png)
+    if pix.colorspace!=fitz.csRGB:
+        pix=fitz.Pixmap(fitz.csRGB,pix)
+    x0,x1=max(0,int(cx-halfw)),min(pix.width,int(cx+halfw)+1)
+    y0,y1=max(0,int(cy-halfh)),min(pix.height,int(cy+halfh)+1)
+    if x1<=x0 or y1<=y0:
+        return None
+    pixels=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width,pix.n)[y0:y1,x0:x1].copy()
+    cropped=fitz.Pixmap(pix.colorspace,x1-x0,y1-y0,pixels.tobytes(),bool(pix.alpha)).tobytes('png')
+    with fitz.open() as doc:
+        page=doc.new_page(width=x1-x0,height=y1-y0)
+        page.insert_image(page.rect,stream=cropped)
+        if line:
+            ax,ay,bx,by=line
+            page.draw_line((ax-x0,ay-y0),(bx-x0,by-y0),color=(0,.35,1),width=2)
+        if bounds:
+            ax,ay,bx,by=bounds
+            page.draw_rect(fitz.Rect(ax-x0-3,ay-y0-3,bx-x0+3,by-y0+3),color=(1,.5,0),width=2)
+        return page.get_pixmap(alpha=False).tobytes('png')
+
+
 def match_dimensions(points,mask,words):
     """Wiąż cyfry tylko z linią o końcach odpowiadających poziomom narożników."""
     lines=straight_lines(mask)
@@ -352,25 +446,30 @@ def match_dimensions(points,mask,words):
             # końce leżą na tych samych poziomach współrzędnych konturu.
             key=(axis,round(points[ends[0]][index],2),round(points[ends[1]][index],2))
             score=abs(across-pos)+abs(along-(start+end)/2)
-            candidates.append((score,key,ends))
+            candidates.append((score,key,ends,image_line(axis,pos,start,end)))
         if not candidates:
             continue
         candidates.sort(key=lambda item:item[0])
         best=candidates[0]
         competing=next((item for item in candidates if item[1]!=best[1]),None)
         certain=word.confidence>=85 and (competing is None or competing[0]-best[0]>15)
-        proposals[best[1]].append((word,best[2],certain))
+        proposals[best[1]].append((word,best[2],certain,best[3]))
     accepted=[]
     questions=[]
     for key,items in proposals.items():
         values={item[0].value for item in items}
         best=max(items,key=lambda item:item[0].confidence)
-        word,ends,certain=best
+        word,ends,certain,line=best
         item=dict(start=ends[0],end=ends[1],axis=key[0],value=word.value)
         if certain and len(values)==1:
             accepted.append(item)
         else:
-            questions.append(dict(**item,candidates=sorted(values),confidence=word.confidence))
+            questions.append(dict(**item,candidates=sorted(values),confidence=word.confidence,image_line=line,label_bounds=word.bounds,source='uncertain_ocr'))
+    accounted={dimension_key(points,item) for item in accepted+questions}
+    for question in unread_dimension_lines(points,mask,lines):
+        if dimension_key(points,question) not in accounted:
+            questions.append(question)
+            accounted.add(dimension_key(points,question))
     return accepted,questions
 
 
