@@ -49,7 +49,7 @@ Obsługa wielu różnych formatek z zadanymi ilościami, otworów i dowolnych k�
 
 ## Szkic → kontur
 
-Nowa zakładka odtwarza dokładną geometrię **z wpisanych wymiarów**, bez mierzenia proporcji obrazka. Obsługiwane typy: U, L i prostokąt. Jest to tryb wspomagany: **nie rozpoznaje automatycznie pisma odręcznego, wymiarów ani rodzaju figury**. Pozostałe kształty nadal wymagają przygotowanego konturu PDF. Nie wymaga nowych bibliotek ani połączenia z usługą zewnętrzną.
+Nowa zakładka odtwarza dokładną geometrię **z wpisanych wymiarów**, bez mierzenia proporcji obrazka. Obsługiwane typy: U, L i prostokąt. Możesz wpisać dane ręcznie albo użyć odczytu przez OpenAI API. Odczyt AI rozpoznaje propozycję typu i zapisanych wymiarów; nie zatwierdza geometrii. Pozostałe kształty nadal wymagają przygotowanego konturu PDF. Ręczne wpisywanie działa offline; AI wymaga internetu i własnego dostępu do API. Nie dodaje nowych bibliotek ani OpenCV.
 
 1. Wczytaj szkic PDF (pierwsza strona) lub obraz PNG/JPG/BMP. Pokazuje się jako odniesienie; podgląd można obracać o 90°. Skala skanu nie jest używana do obliczeń. Wczytanie innego pliku czyści poprzednie wymiary i zatwierdzenie.
 2. Wybierz typ figury i przypisz wymiary ze szkicu do opisanych pól. Szerokość i wysokość są zawsze **zewnętrzne**. Dla U poprzeczka znajduje się u góry, a ramiona są skierowane w dół. Dla L poprzeczka jest u góry, a ramię po lewej; orientację konturu podczas układania można zmieniać dotychczasowym przełącznikiem obrotów.
@@ -60,7 +60,20 @@ Nowa zakładka odtwarza dokładną geometrię **z wpisanych wymiarów**, bez mie
 
 Przykład BV300: U, szerokość zewnętrzna 440, wysokość zewnętrzna 160, poprzeczka 30, lewe ramię 30, prawe ramię 60 mm. Wynik: wycięcie 350 × 130 mm, pole materiału 24 900 mm². Podanie przy tym głębokości wycięcia 160 mm jest sprzeczne i zostaje odrzucone. Ten kontur porównano z poprawnym PDF użytkownika: odchylenie poniżej 0,001 mm.
 
-Automatyczne rozpoznawanie odręcznych szkiców i przypisywanie odczytanych wymiarów pozostaje osobnym, niewdrożonym elementem. Obecny tryb pozwala zbudować i zweryfikować kontur bez ręcznego rysowania w programie graficznym.
+Tryb pozwala zbudować i zweryfikować kontur bez ręcznego rysowania w programie graficznym.
+
+### Odczyt szkicu przez AI
+
+1. Utwórz klucz na https://platform.openai.com/api-keys i zapewnij środki/dostęp do modelu na koncie API. Rozliczenie API jest niezależne od abonamentu ChatGPT.
+2. W aplikacji wybierz **Szkic → kontur → Ustawienia AI / klucz dostępu**. Wpisz klucz lokalnie; nie wysyłaj go w rozmowie ani w plikach projektu. Klucz pozostaje w pamięci do zamknięcia aplikacji. Alternatywnie aplikacja odczytuje lokalne `FORMATKI_OPENAI_API_KEY` lub `OPENAI_API_KEY`. Kluczy nie należy wpisywać do skryptu BAT, README ani kodu.
+3. Domyślny model to `gpt-4.1`. Możesz wpisać inny dostępny na Twoim koncie model obsługujący obrazy i Structured Outputs w Responses API. Brak dostępu lub nieobsługiwany model jest zgłaszany jako błąd, bez zastępowania danych zgadywanymi wartościami.
+4. Wczytaj szkic i ewentualnie obróć podgląd. Kliknij **Odczytaj szkic przez OpenAI**. Dopiero ten przycisk wysyła do `https://api.openai.com/v1/responses` obraz pierwszej strony, w orientacji podglądu, wraz z poleceniem odczytu i schematem danych. Pełny oryginalny PDF nie jest przesyłany. Zapytanie jest płatne według cennika użytego modelu. Zapytanie ustawia `store: false`; nie stanowi to gwarancji braku przetwarzania lub retencji po stronie dostawcy — obowiązują warunki OpenAI API.
+5. Poczekaj na raport i propozycję. AI ma odczytywać tylko jawne wymiary z napisów i strzałek, bez pomiaru pikseli, skali kratki, domniemanej symetrii ani obliczania brakujących liczb. Do pól trafiają wyłącznie dodatnie, skończone liczby w mm oznaczone przez model jako jednoznaczne i zawierające opis odczytu. Nieznany typ lub jednostki blokują przeniesienie wymiarów. Niepewne wymiary pozostają puste; raport pokazuje pytania i uwagi.
+6. Jeśli danych wystarcza, aplikacja tworzy propozycję konturu, sprawdzając relacje wymiarowe tak samo jak przy wpisywaniu ręcznym. Obejrzyj raport, porównaj KAŻDY wymiar ze szkicem i wyjaśnij niejasności z klientem. AI może błędnie rozpoznać lub przypisać liczbę nawet wtedy, gdy oznaczy ją jako pewną. Kontur nadal wymaga zaznaczenia potwierdzenia przed przekazaniem do układania lub eksportem.
+
+Odczyt działa w tle; limit połączenia wynosi 90 sekund. Zmiana szkicu, jego obrotu, rodzaju lub wymiarów podczas odczytu powoduje odrzucenie nieaktualnego wyniku. Błędy klucza, sieci i limitów nie zmieniają wpisanych wymiarów. Nie ma automatycznego ponawiania płatnych zapytań. Żądania nie podążają za przekierowaniami HTTP, a TLS jest weryfikowany standardowo. Aplikacja nie zapisuje klucza na dysku ani nie wyświetla surowych błędów serwera.
+
+Integrację sprawdzono na symulowanych odpowiedziach API (format żądania, błędy, niejednoznaczne wymiary, walidacja). Brak klucza w środowisku chmurowym uniemożliwił test na rzeczywistym modelu i ocenę trafności odczytu odręcznego BV300. Po lokalnym skonfigurowaniu dostępu pierwszy odczyt wymaga sprawdzenia na znanym przykładzie: U, 440 × 160 mm, poprzeczka 30 mm, ramiona 30 i 60 mm, wycięcie 350 × 130 mm.
 
 ## Weryfikacja
 
