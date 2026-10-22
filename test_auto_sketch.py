@@ -30,6 +30,23 @@ class AutoSketchTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'Brakuje wymiarów'):
                 build_contour(edges,extra)
 
+    def test_faint_outline_with_diagonal_annotation_leaders(self):
+        points=[(100,50),(350,50),(350,150),(300,150),(300,100),(150,100),
+                (150,600),(300,600),(300,550),(350,550),(350,650),(100,650)]
+        with fitz.open() as doc:
+            page=doc.new_page(width=500,height=700)
+            page.draw_polyline(points+[points[0]],color=(.82,)*3,width=2)
+            for a,b in [((100,50),(220,310)),((350,50),(220,310)),
+                        ((100,650),(220,410)),((350,650),(220,410)),((220,310),(220,410))]:
+                page.draw_line(a,b,color=(.82,)*3,width=2)
+            png=page.get_pixmap(alpha=False).tobytes('png')
+        with self.assertRaises(ValueError):
+            detect_contours(png,205)
+        result=detect_contours(png,225)
+        self.assertEqual(len(result.contours[0]),12)
+        from shapely.geometry import Polygon
+        self.assertLess(Polygon(points).hausdorff_distance(Polygon(result.contours[0])),5)
+
     def test_arbitrary_slanted_outline(self):
         result=detect_contours(drawing([(50,50),(400,50),(450,200),(250,350),(50,220)]))
         self.assertEqual(len(result.contours[0]),5)

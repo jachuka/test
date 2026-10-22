@@ -8,7 +8,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog
 from sketch import build_contour, preview_png
 from irregular import NestResult, export_pdf
 from preferences import save_tesseract
-from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report, question_crop
+from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report, question_crop, monochrome
 
 
 class DimensionQuestion(simpledialog.Dialog):
@@ -76,6 +76,10 @@ class SketchTab(ttk.Frame):
         self.model = None
         self.source_path = None
         self.source_image = None
+        self.source_png = None
+        self.threshold = tk.DoubleVar(value=205)
+        self.binary_preview = tk.BooleanVar(value=False)
+        self.preview_job = None
         self.display_image = None
         self.rotation = 0
         self.points = []
@@ -102,6 +106,11 @@ class SketchTab(ttk.Frame):
         self.source_label.pack(anchor='w')
         self.auto_button = ttk.Button(panel, text='Wykryj obrys i odczytaj wymiary lokalnie', command=self.auto_read, state='disabled')
         self.auto_button.pack(fill='x', pady=5)
+        ttk.Label(panel,text='Próg jasności (czułość odczytu)').pack(anchor='w')
+        ttk.Scale(panel,from_=80,to=245,variable=self.threshold,command=self.threshold_changed).pack(fill='x')
+        self.threshold_label=ttk.Label(panel,text='205 — zwiększ dla jasnych kresek, zmniejsz dla tła.',wraplength=325)
+        self.threshold_label.pack(anchor='w')
+        ttk.Checkbutton(panel,text='Pokaż czarno-biały obraz do odczytu',variable=self.binary_preview,command=self.draw_source).pack(anchor='w')
         self.autoload = tk.BooleanVar(value=True)
         ttk.Checkbutton(panel,text='Odczytuj automatycznie po wczytaniu',variable=self.autoload).pack(anchor='w')
         self.detected_choice = ttk.Combobox(panel, state='disabled')
@@ -158,7 +167,7 @@ class SketchTab(ttk.Frame):
         self.source_canvas.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
         self.source_canvas.bind('<Configure>', lambda _: self.draw_source())
         self.source_canvas.bind('<Button-1>', self.click)
-        ttk.Label(content, text='Kontur obliczony z wymiarów — numeracja jest zgodna ze szkicem').pack(anchor='w', pady=(8, 2))
+        ttk.Label(content, text='Kontur obliczony z wymiarów — długości boków w mm').pack(anchor='w', pady=(8, 2))
         preview=ttk.Frame(content)
         preview.pack(fill='both',expand=True)
         preview.rowconfigure(0,weight=1)
@@ -201,11 +210,13 @@ class SketchTab(ttk.Frame):
         if not path:
             return
         try:
-            image = tk.PhotoImage(data=preview_png(path))
+            png = preview_png(path)
+            image = tk.PhotoImage(data=png)
         except Exception as exc:
             messagebox.showerror('Import szkicu', str(exc))
             return
         self.source_path, self.source_image = path, image
+        self.source_png = png
         self.rotation = 0
         self.detection = None
         self.detected_choice.set('')
@@ -241,7 +252,8 @@ class SketchTab(ttk.Frame):
         if self.closed and not messagebox.askyesno('Odczyt szkicu', 'Nowy odczyt zastąpi obecny kontur i wymiary. Kontynuować?'):
             return
         try:
-            png=preview_png(self.source_path,self.rotation)
+            png=self.source_png or preview_png(self.source_path,self.rotation)
+            threshold=round(self.threshold.get())
         except Exception as exc:
             messagebox.showerror('Odczyt szkicu',str(exc));return
         executable=self.tesseract_override or find_tesseract()
@@ -253,7 +265,7 @@ class SketchTab(ttk.Frame):
         self.auto_status.config(text='Wykrywanie obrysu i lokalny OCR…' if executable else 'Wykrywanie obrysu… Brak Tesseract; zapytam o wymiary, których nie da się wyliczyć.')
         def worker():
             try:
-                detection=detect_contours(png)
+                detection=detect_contours(png,threshold)
                 diagnostics={}
                 words=ocr_numbers(detection.mask,executable,diagnostics=diagnostics)
                 self.auto_queue.put((version,detection,words,None,diagnostics))
@@ -530,11 +542,13 @@ class SketchTab(ttk.Frame):
             return
         rotation = (self.rotation + 90) % 360
         try:
-            image = tk.PhotoImage(data=preview_png(self.source_path, rotation))
+            png = preview_png(self.source_path, rotation)
+            image = tk.PhotoImage(data=png)
         except Exception as exc:
             messagebox.showerror('Podgląd', str(exc))
             return
         self.rotation, self.source_image = rotation, image
+        self.source_png = png
         self.detection = None
         self.detected_choice.set('')
         self.detected_choice.config(state='disabled',values=())
@@ -544,13 +558,34 @@ class SketchTab(ttk.Frame):
         self.full_size = not self.full_size
         self.draw_source()
 
+    def threshold_changed(self, value=None):
+        self.threshold_label.config(text=f'{round(self.threshold.get())} — zwiększ dla jasnych kresek, zmniejsz dla tła.')
+        if self.source_image is None:
+            return
+        self.invalidate()
+        self.auto_status.config(text='Zmieniono próg. Ponów wykrywanie, aby zastosować go do obrysu i OCR.')
+        if self.preview_job is not None:
+            self.after_cancel(self.preview_job)
+        self.preview_job=self.after(150,self.refresh_source_preview)
+
+    def refresh_source_preview(self):
+        self.preview_job=None
+        self.draw_source()
+
     def draw_source(self):
         c = self.source_canvas
         c.delete('all')
         if self.source_image is None:
             return
         factor = 1 if self.full_size else max(1, ceil(self.source_image.width()/max(1,c.winfo_width()-20)), ceil(self.source_image.height()/max(1,c.winfo_height()-20)))
-        self.display_image = self.source_image.subsample(factor, factor)
+        image=self.source_image
+        if self.binary_preview.get() and self.source_png:
+            import pymupdf as fitz
+            mask=monochrome(self.source_png,round(self.threshold.get()))
+            samples=((~mask).astype('uint8')*255).tobytes()
+            pix=fitz.Pixmap(fitz.csGRAY,mask.shape[1],mask.shape[0],samples,False)
+            image=tk.PhotoImage(data=pix.tobytes('png'))
+        self.display_image = image.subsample(factor, factor)
         self.image_factor = factor
         self.image_origin = (10, 10)
         c.create_image(10, 10, image=self.display_image, anchor='nw')
@@ -629,7 +664,7 @@ class SketchTab(ttk.Frame):
             xx,yy=vertices[(i+1)%len(vertices)]
             dx,dy=xx-x,yy-y
             length=hypot(dx,dy)
-            self.edge_table.insert('', 'end',values=(f'P{i+1} → P{(i+1)%len(vertices)+1}',mm(length)))
+            self.edge_table.insert('', 'end',values=(f'Bok {i+1}',mm(length)))
             nx,ny=-dy/length,dx/length
             if self.model.polygon.contains(Point((x+xx)/2+nx*.01,(y+yy)/2+ny*.01)):
                 nx,ny=-nx,-ny
@@ -658,8 +693,6 @@ class SketchTab(ttk.Frame):
                 line=(cw/2,oy+start*scale,cw/2,oy+end*scale)
                 label(cw/2+12,(line[1]+line[3])/2,mm(end-start),angle=90,tag='given-dimension')
             c.create_line(*line,arrow='both',fill='#496779')
-        for i,(x,y) in enumerate(screen):
-            c.create_text(x+5,y-9,text=f'P{i+1}',anchor='w',fill='#566875',tags=('vertex-label',))
         area=f'{self.model.polygon.area/1_000_000:.8f}'.rstrip('0').rstrip('.').replace('.',',')
         c.create_text(cw/2,ch-20,text=f'Pole: {area} m² • długości boków w mm',tags=('area-label',))
 

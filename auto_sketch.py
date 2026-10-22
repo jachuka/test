@@ -25,13 +25,15 @@ class Detection:
     png: bytes
 
 
-def monochrome(png):
+def monochrome(png,threshold=205):
+    if not 80<=threshold<=245:
+        raise ValueError('Próg jasności musi być z zakresu 80–245.')
     pix = fitz.Pixmap(png)
     if pix.colorspace != fitz.csRGB:
         pix = fitz.Pixmap(fitz.csRGB, pix)
     rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
     # Odrzuć jasną niebieską kratkę oraz kolorowe pieczątki; zachowaj ciemny tusz.
-    return (rgb.max(axis=2) < 205) & (np.ptp(rgb, axis=2) < 75)
+    return (rgb.max(axis=2) < threshold) & (np.ptp(rgb, axis=2) < 75)
 
 
 def close_gaps(mask):
@@ -91,11 +93,7 @@ def enclosed_regions(dark):
     return result
 
 
-def detect_contours(png):
-    mask=monochrome(png)
-    regions=enclosed_regions(close_gaps(mask))
-    if not regions:
-        raise ValueError('Nie wykryto zamkniętego obrysu. Wykadruj szkic, popraw przerwy w obrysie albo zaznacz narożniki ręcznie.')
+def contour_candidates(regions):
     # Linia wymiarowa może rozdzielić wnętrze formatki. Scal sąsiednie pola
     # oddzielone tylko cienką kreską; wynik zawsze wymaga obejrzenia.
     parent=list(range(len(regions)))
@@ -145,9 +143,64 @@ def detect_contours(png):
             outline=Polygon(points)
             if outline.is_valid and outline.area>0 and 3<=len(points)<=500:
                 contours.append(points)
-    if not contours:
-        raise ValueError('Nie udało się uzyskać poprawnego konturu. Wybierz narożniki ręcznie.')
     contours.sort(key=lambda points:-Polygon(points).area)
+    return contours
+
+
+def orthogonal_ink(mask):
+    """Wariant pomocniczy: zachowaj długie H/V, pomiń skośne linie odnośników.
+
+    Oryginalny wariant pozostaje dostępny dla konturów z prawdziwymi skosami.
+    """
+    padded=np.pad(mask,1)
+    horizontal=padded[:-2,1:-1]|mask|padded[2:,1:-1]
+    vertical=padded[1:-1,:-2]|mask|padded[1:-1,2:]
+    result=np.zeros_like(mask)
+    for axis,source in (('x',horizontal),('y',vertical)):
+        for direction,pos,start,end in straight_lines(source):
+            if direction!=axis:
+                continue
+            if arrow_at(mask,axis,pos,start,1) and arrow_at(mask,axis,pos,end,-1):
+                continue
+            pos,start,end=round(pos),round(start),round(end)
+            if axis=='x':
+                result[pos,start:end+1]=True
+            else:
+                result[start:end+1,pos]=True
+    return result
+
+
+def detect_contours(png,threshold=205):
+    mask=monochrome(png,threshold)
+    primary=contour_candidates(enclosed_regions(close_gaps(mask)))
+    orthogonal=contour_candidates(enclosed_regions(close_gaps(orthogonal_ink(mask))))
+    if not primary and not orthogonal:
+        raise ValueError('Nie wykryto zamkniętego obrysu. Zwiększ próg jasności, popraw przerwy albo użyj korekty ręcznej.')
+    def axis_ratio(points):
+        total=aligned=0
+        for i,(x,y) in enumerate(points):
+            xx,yy=points[(i+1)%len(points)]
+            length=((xx-x)**2+(yy-y)**2)**.5
+            total+=length
+            if abs(xx-x)<.01 or abs(yy-y)<.01:
+                aligned+=length
+        return aligned/total if total else 0
+    prefer_orthogonal=not primary
+    if primary and orthogonal:
+        original,alternative=Polygon(primary[0]),Polygon(orthogonal[0])
+        from shapely.geometry import box
+        a,b=box(*original.bounds),box(*alternative.bounds)
+        overlap=a.intersection(b).area/min(a.area,b.area)
+        comparable=min(a.area,b.area)/max(a.area,b.area)>.75
+        prefer_orthogonal=(alternative.area>original.area*1.3 or
+                           (axis_ratio(primary[0])<.98 and overlap>.9 and comparable))
+    ordered=(orthogonal+primary) if prefer_orthogonal else (primary+orthogonal)
+    contours=[]
+    for points in ordered:
+        poly=Polygon(points)
+        if any(poly.hausdorff_distance(Polygon(old))<7 for old in contours):
+            continue
+        contours.append(points)
     return Detection(contours,mask,png)
 
 
