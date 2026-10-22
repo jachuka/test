@@ -1,9 +1,9 @@
-"""Wspomagane odtwarzanie szkicu: użytkownik określa typ i wymiary."""
+"""Edytor dowolnego konturu wielokątnego ze szkicu, wyłącznie lokalny."""
 from math import ceil
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
-from sketch import build_shape, LABELS, preview_png
+from tkinter import ttk, filedialog, messagebox, simpledialog
+from sketch import build_contour, preview_png
 from irregular import NestResult, export_pdf
 
 
@@ -13,83 +13,81 @@ class SketchTab(ttk.Frame):
         self.on_accept = on_accept
         self.model = None
         self.source_path = None
-        self.rotation = 0
         self.source_image = None
         self.display_image = None
+        self.rotation = 0
+        self.points = []
+        self.edge_values = []
+        self.extra = []
+        self.closed = False
+        self.full_size = False
+        self.image_origin = (0, 0)
+        self.image_factor = 1
         sidebar = ttk.Frame(self)
         sidebar.pack(side='left', fill='y')
-        scroll_canvas = tk.Canvas(sidebar, width=345, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(sidebar, orient='vertical', command=scroll_canvas.yview)
-        scrollbar.pack(side='right', fill='y')
-        scroll_canvas.pack(side='left', fill='y', expand=True)
-        scroll_canvas.configure(yscrollcommand=scrollbar.set)
-        panel = ttk.Frame(scroll_canvas, padding=12)
-        window = scroll_canvas.create_window((0, 0), window=panel, anchor='nw')
-        panel.bind('<Configure>', lambda _: scroll_canvas.configure(scrollregion=scroll_canvas.bbox('all')))
-        scroll_canvas.bind('<Configure>', lambda event: scroll_canvas.itemconfigure(window, width=event.width))
-        ttk.Label(panel, text='Szkic → kontur', font=('Arial', 17, 'bold')).pack(anchor='w')
-        ttk.Button(panel, text='Wczytaj szkic PDF / obraz', command=self.load).pack(fill='x', pady=6)
-        self.source_label = ttk.Label(panel, text='Wczytaj szkic lub utwórz kontur z wymiarów.', wraplength=310)
+        scroll = tk.Canvas(sidebar, width=360, highlightthickness=0)
+        bar = ttk.Scrollbar(sidebar, orient='vertical', command=scroll.yview)
+        bar.pack(side='right', fill='y')
+        scroll.pack(side='left', fill='both', expand=True)
+        scroll.configure(yscrollcommand=bar.set)
+        panel = ttk.Frame(scroll, padding=12)
+        window = scroll.create_window((0, 0), window=panel, anchor='nw')
+        panel.bind('<Configure>', lambda _: scroll.configure(scrollregion=scroll.bbox('all')))
+        scroll.bind('<Configure>', lambda e: scroll.itemconfigure(window, width=e.width))
+        ttk.Label(panel, text='Szkic → dowolny kontur', font=('Arial', 16, 'bold')).pack(anchor='w')
+        ttk.Button(panel, text='Wczytaj szkic PDF / obraz', command=self.load).pack(fill='x', pady=5)
+        self.source_label = ttk.Label(panel, text='Brak listy typów. Zaznacz kolejne narożniki konturu.', wraplength=325)
         self.source_label.pack(anchor='w')
-        self.rotate_source = ttk.Button(panel, text='Obróć podgląd szkicu o 90°', command=self.rotate_preview, state='disabled')
-        self.rotate_source.pack(fill='x', pady=3)
-        ttk.Label(panel, text='Typ kształtu (wybierz na podstawie szkicu):').pack(anchor='w', pady=(8, 2))
-        self.kind = ttk.Combobox(panel, state='readonly', values=('U', 'L', 'Prostokąt'))
-        self.kind.set('U')
-        self.kind.pack(fill='x')
-        self.kind.bind('<<ComboboxSelected>>', self.refresh_fields)
-        self.values, self.rows = {}, {}
-        for key, label in LABELS.items():
-            frame = ttk.Frame(panel)
-            frame.pack(fill='x', pady=3)
-            ttk.Label(frame, text=label + ' [mm]').pack(anchor='w')
-            variable = tk.StringVar()
-            entry = ttk.Entry(frame, textvariable=variable)
-            entry.pack(fill='x')
-            variable.trace_add('write', self.invalidate)
-            self.values[key] = variable
-            self.rows[key] = (frame, entry)
-        ttk.Label(panel, text='Pola pozostają puste, dopóki nie podasz wymiarów. Wymiary wycięcia są opcjonalne, jeśli wynikają z pozostałych; jeśli je podasz, sprawdzę zgodność.', wraplength=310).pack(anchor='w', pady=5)
-        ttk.Button(panel, text='Zbuduj i sprawdź kontur', command=self.build).pack(fill='x', pady=4)
+        ttk.Label(panel, text='1. Klikaj narożniki po obwodzie (bez powtarzania pierwszego).\n2. Zamknij kontur.\n3. Wpisz różnice współrzędnych w mm lub wymiary między punktami.', wraplength=325).pack(anchor='w', pady=7)
+        self.orthogonal = tk.BooleanVar(value=True)
+        ttk.Checkbutton(panel, text='Podpowiadaj poziom/pion (tylko kierunek)', variable=self.orthogonal).pack(anchor='w')
+        for text, command in [('Zamknij kontur', self.close_outline), ('Cofnij ostatni narożnik', self.undo), ('Wyczyść narożniki i wymiary', self.clear), ('Obróć szkic o 90°', self.rotate_preview), ('Podgląd 100% / dopasuj', self.toggle_size)]:
+            ttk.Button(panel, text=text, command=command).pack(fill='x', pady=2)
+        ttk.Label(panel, text='ΔX: w prawo +, w lewo −. ΔY: w dół +, w górę −.\n0 oznacza tę samą współrzędną. Puste pole = nieznany wymiar. Długości nie są mierzone z obrazka.', wraplength=325).pack(anchor='w', pady=7)
+        self.edges_frame = ttk.Frame(panel)
+        self.edges_frame.pack(fill='x')
+        ttk.Label(panel, text='Wymiary dodatkowe / wyrównanie punktów:').pack(anchor='w', pady=(8, 2))
+        self.extra_list = tk.Listbox(panel, height=4, width=36)
+        self.extra_list.pack(fill='x')
+        ttk.Button(panel, text='Dodaj wymiar między punktami', command=self.add_dimension).pack(fill='x', pady=2)
+        ttk.Button(panel, text='Usuń zaznaczony wymiar', command=self.remove_dimension).pack(fill='x', pady=2)
+        ttk.Button(panel, text='Zbuduj i sprawdź kontur', command=self.build).pack(fill='x', pady=8)
         self.confirm = tk.BooleanVar(value=False)
-        ttk.Checkbutton(panel, text='Potwierdzam kształt i wymiary', variable=self.confirm, command=self.confirmed).pack(anchor='w', pady=3)
+        ttk.Checkbutton(panel, text='Potwierdzam kontur i wymiary', variable=self.confirm, command=self.confirmed).pack(anchor='w')
         self.transfer = ttk.Button(panel, text='Zatwierdź i przejdź do układania', command=self.accept, state='disabled')
         self.transfer.pack(fill='x', pady=3)
         self.export = ttk.Button(panel, text='Zapisz sam kontur do PDF 1:1', command=self.save, state='disabled')
         self.export.pack(fill='x', pady=3)
-        self.status = ttk.Label(panel, text='Nie określaj wymiarów z proporcji zdjęcia.', wraplength=310)
+        self.status = ttk.Label(panel, text='Obsługiwane są kontury z odcinków, w tym skośnych i wklęsłych. Łuki wymagają konturu wektorowego PDF. Brak automatycznego odczytu pisma.', wraplength=325)
         self.status.pack(anchor='w', pady=5)
         content = ttk.Frame(self, padding=8)
         content.pack(side='right', fill='both', expand=True)
-        ttk.Label(content, text='Szkic źródłowy — podgląd bez skali pomiarowej').pack(anchor='w')
-        self.source_canvas = tk.Canvas(content, background='#edf0f4', highlightthickness=0, height=280)
-        self.source_canvas.pack(fill='both', expand=True)
+        ttk.Label(content, text='Szkic: zaznacz kolejne narożniki; czerwone odcinki wskazują ich kolejność').pack(anchor='w')
+        holder = ttk.Frame(content)
+        holder.pack(fill='both', expand=True)
+        holder.rowconfigure(0, weight=1)
+        holder.columnconfigure(0, weight=1)
+        self.source_canvas = tk.Canvas(holder, background='#edf0f4', highlightthickness=0, height=300)
+        self.source_canvas.grid(row=0, column=0, sticky='nsew')
+        sx = ttk.Scrollbar(holder, orient='horizontal', command=self.source_canvas.xview)
+        sy = ttk.Scrollbar(holder, orient='vertical', command=self.source_canvas.yview)
+        sx.grid(row=1, column=0, sticky='ew')
+        sy.grid(row=0, column=1, sticky='ns')
+        self.source_canvas.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
         self.source_canvas.bind('<Configure>', lambda _: self.draw_source())
-        ttk.Label(content, text='Odtworzony kontur — na podstawie zatwierdzanych wymiarów').pack(anchor='w', pady=(8, 2))
+        self.source_canvas.bind('<Button-1>', self.click)
+        ttk.Label(content, text='Kontur obliczony z wymiarów — numeracja jest zgodna ze szkicem').pack(anchor='w', pady=(8, 2))
         self.canvas = tk.Canvas(content, background='#e9eef4', highlightthickness=0, height=280)
         self.canvas.pack(fill='both', expand=True)
         self.canvas.bind('<Configure>', lambda _: self.draw())
-        self.refresh_fields()
-
-    def refresh_fields(self, event=None):
-        kind = self.kind.get()
-        active = {'width', 'height'}
-        if kind in ('U', 'L'):
-            active.update(('top', 'left', 'inner_width', 'inner_height'))
-        if kind == 'U':
-            active.add('right')
-        for key, (_, entry) in self.rows.items():
-            entry.config(state='normal' if key in active else 'disabled')
-        self.invalidate()
 
     def invalidate(self, *args):
         self.model = None
-        if hasattr(self, 'confirm'):
-            self.confirm.set(False)
-            self.transfer.config(state='disabled')
-            self.export.config(state='disabled')
-            self.status.config(text='Wpisz wymiary i kliknij „Zbuduj i sprawdź kontur”.')
-            self.draw()
+        self.confirm.set(False)
+        self.transfer.config(state='disabled')
+        self.export.config(state='disabled')
+        self.status.config(text='Zbuduj kontur z aktualnych wymiarów. Współrzędne kliknięć określają tylko kolejność i podpowiedź kierunku, nie długości.')
+        self.draw()
 
     def load(self):
         path = filedialog.askopenfilename(filetypes=[('Szkic PDF lub obraz', '*.pdf *.png *.jpg *.jpeg *.bmp')])
@@ -102,83 +100,216 @@ class SketchTab(ttk.Frame):
             return
         self.source_path, self.source_image = path, image
         self.rotation = 0
-        self.rotate_source.config(state="normal")
-        for variable in self.values.values():
-            variable.set('')
-        self.invalidate()
-        self.source_label.config(text=f'{Path(path).name}\nTyp i wymiary wpisz ze szkicu. Ta wersja nie rozpoznaje automatycznie pisma ani typu kształtu.')
+        self.reset()
+        self.source_label.config(text=Path(path).name + '\nKliknij narożniki dowolnego konturu po kolei.')
         self.draw_source()
+
+    def reset(self):
+        self.points = []
+        self.closed = False
+        self.extra = []
+        self.edge_values = []
+        self.render_edges()
+        self.render_extra()
+        self.invalidate()
+        self.draw_source()
+
+    def clear(self):
+        if self.points and not messagebox.askyesno('Wyczyść kontur', 'Usunąć wszystkie narożniki i przypisane wymiary?'):
+            return
+        self.reset()
+
+    def click(self, event):
+        if self.source_image is None or self.closed:
+            return
+        if len(self.points) >= 500:
+            messagebox.showinfo('Limit narożników', 'Kontur może mieć maksymalnie 500 narożników.')
+            return
+        c = self.source_canvas
+        x = (c.canvasx(event.x) - self.image_origin[0]) * self.image_factor
+        y = (c.canvasy(event.y) - self.image_origin[1]) * self.image_factor
+        if not (0 <= x <= self.source_image.width() and 0 <= y <= self.source_image.height()):
+            return
+        if any(abs(x-px) + abs(y-py) < 3 for px, py in self.points):
+            return
+        self.points.append((x, y))
+        self.invalidate()
+        self.draw_source()
+
+    def close_outline(self):
+        if self.closed:
+            return
+        if len(self.points) < 3:
+            messagebox.showinfo('Narożniki', 'Zaznacz co najmniej trzy narożniki.')
+            return
+        self.closed = True
+        self.edge_values = []
+        for i, (x, y) in enumerate(self.points):
+            xx, yy = self.points[(i+1) % len(self.points)]
+            dx, dy = '', ''
+            if self.orthogonal.get():
+                if abs(xx-x) > 5 * abs(yy-y):
+                    dy = '0'
+                elif abs(yy-y) > 5 * abs(xx-x):
+                    dx = '0'
+            self.edge_values.append((tk.StringVar(value=dx), tk.StringVar(value=dy)))
+        self.render_edges()
+        self.invalidate()
+        self.draw_source()
+
+    def undo(self):
+        if not self.points:
+            return
+        if self.closed:
+            if not messagebox.askyesno('Edycja narożników', 'Otwarcie konturu wyczyści przypisane wymiary. Kontynuować?'):
+                return
+            self.closed = False
+            self.edge_values = []
+            self.extra = []
+            self.render_edges()
+            self.render_extra()
+        self.points.pop()
+        self.invalidate()
+        self.draw_source()
+
+    def render_edges(self):
+        for child in self.edges_frame.winfo_children():
+            child.destroy()
+        if not self.closed:
+            return
+        for col, text in enumerate(('Bok', 'ΔX [mm]', 'ΔY [mm]')):
+            ttk.Label(self.edges_frame, text=text).grid(row=0, column=col, sticky='w')
+        for i, (dx, dy) in enumerate(self.edge_values):
+            ttk.Label(self.edges_frame, text=f'P{i+1} → P{(i+1)%len(self.points)+1}').grid(row=i+1, column=0, padx=(0, 5))
+            for col, variable in enumerate((dx, dy), 1):
+                ttk.Entry(self.edges_frame, textvariable=variable, width=11).grid(row=i+1, column=col, padx=2, pady=2)
+                variable.trace_add('write', self.invalidate)
+
+    def add_dimension(self):
+        if not self.closed:
+            messagebox.showinfo('Najpierw kontur', 'Najpierw zaznacz narożniki i zamknij kontur.')
+            return
+        dialog = tk.Toplevel(self)
+        dialog.title('Wymiar między punktami')
+        dialog.transient(self.winfo_toplevel())
+        panel = ttk.Frame(dialog, padding=15)
+        panel.pack(fill='both', expand=True)
+        widgets = []
+        for label in ('Punkt początkowy', 'Punkt końcowy'):
+            ttk.Label(panel, text=label).pack(anchor='w')
+            widget = ttk.Combobox(panel, state='readonly', values=[f'P{i+1}' for i in range(len(self.points))])
+            widget.pack(fill='x', pady=3)
+            widgets.append(widget)
+        widgets[0].current(0)
+        widgets[1].current(1)
+        ttk.Label(panel, text='Oś wymiaru:').pack(anchor='w')
+        axis = ttk.Combobox(panel, state='readonly', values=('X — poziomo', 'Y — pionowo'))
+        axis.current(0)
+        axis.pack(fill='x', pady=3)
+        ttk.Label(panel, text='Różnica w mm (prawo/dół +, lewo/góra −):').pack(anchor='w')
+        value = ttk.Entry(panel)
+        value.pack(fill='x', pady=3)
+        ttk.Label(panel, text='0 oznacza wyrównanie punktów w tej osi. Nie wpisuj długości skośnego odcinka zamiast jego rzutu.', wraplength=320).pack(anchor='w', pady=5)
+        def apply():
+            from sketch import number
+            try:
+                parsed = number(value.get(), 'Wymiar')
+                if parsed is None or widgets[0].current() == widgets[1].current():
+                    raise ValueError('Wybierz dwa różne punkty i wpisz wymiar.')
+            except ValueError as exc:
+                messagebox.showerror('Wymiar', str(exc), parent=dialog)
+                return
+            self.extra.append(dict(start=widgets[0].current(), end=widgets[1].current(), axis='x' if axis.current()==0 else 'y', value=parsed))
+            self.render_extra()
+            self.invalidate()
+            dialog.destroy()
+        ttk.Button(panel, text='Dodaj wymiar', command=apply).pack(fill='x', pady=5)
+        dialog.grab_set()
+
+    def render_extra(self):
+        self.extra_list.delete(0, 'end')
+        for item in self.extra:
+            self.extra_list.insert('end', f"P{item['start']+1} → P{item['end']+1}: {item['axis'].upper()} = {item['value']:g} mm")
+
+    def remove_dimension(self):
+        selected = self.extra_list.curselection()
+        if selected:
+            self.extra.pop(selected[0])
+            self.render_extra()
+            self.invalidate()
 
     def rotate_preview(self):
         if not self.source_path:
+            return
+        if self.points and not messagebox.askyesno('Obrót szkicu', 'Obrót wyczyści narożniki i ich wymiary. Kontynuować?'):
             return
         rotation = (self.rotation + 90) % 360
         try:
             image = tk.PhotoImage(data=preview_png(self.source_path, rotation))
         except Exception as exc:
-            messagebox.showerror('Podgląd szkicu', str(exc))
+            messagebox.showerror('Podgląd', str(exc))
             return
         self.rotation, self.source_image = rotation, image
-        self.invalidate()
+        self.reset()
+
+    def toggle_size(self):
+        self.full_size = not self.full_size
         self.draw_source()
 
     def draw_source(self):
         c = self.source_canvas
         c.delete('all')
         if self.source_image is None:
-            c.create_text(max(100, c.winfo_width()) / 2, max(100, c.winfo_height()) / 2, text='Tu pojawi się szkic klienta.')
             return
-        factor = max(1, ceil(self.source_image.width() / max(1, c.winfo_width() - 16)), ceil(self.source_image.height() / max(1, c.winfo_height() - 16)))
+        factor = 1 if self.full_size else max(1, ceil(self.source_image.width()/max(1,c.winfo_width()-20)), ceil(self.source_image.height()/max(1,c.winfo_height()-20)))
         self.display_image = self.source_image.subsample(factor, factor)
-        c.create_image(c.winfo_width() / 2, c.winfo_height() / 2, image=self.display_image)
+        self.image_factor = factor
+        self.image_origin = (10, 10)
+        c.create_image(10, 10, image=self.display_image, anchor='nw')
+        c.configure(scrollregion=(0,0,max(c.winfo_width(),self.display_image.width()+20),max(c.winfo_height(),self.display_image.height()+20)))
+        xy = [(10+x/factor,10+y/factor) for x,y in self.points]
+        if len(xy)>1:
+            line = xy + ([xy[0]] if self.closed else [])
+            c.create_line(*[v for p in line for v in p], fill='#ce302d', width=2)
+        for i,(x,y) in enumerate(xy):
+            c.create_oval(x-3,y-3,x+3,y+3,fill='#ce302d',outline='white')
+            c.create_text(x+5,y-8,text=f'P{i+1}',fill='#a60000',anchor='w')
 
     def build(self):
         self.invalidate()
+        if not self.closed:
+            messagebox.showinfo('Kontur', 'Najpierw zaznacz narożniki i zamknij kontur.')
+            return
         try:
-            self.model = build_shape(self.kind.get(), {key: variable.get() for key, variable in self.values.items()})
+            self.model = build_contour([dict(dx=dx.get(),dy=dy.get()) for dx,dy in self.edge_values], self.extra)
         except ValueError as exc:
             self.status.config(text=str(exc))
             messagebox.showerror('Uzupełnij lub popraw wymiary', str(exc))
             return
-        d = self.model.dimensions
-        summary = f"Zewnętrzne: {d['width']:g} × {d['height']:g} mm"
-        if 'inner_width' in d:
-            summary += f"\nWycięcie: {d['inner_width']:g} × {d['inner_height']:g} mm"
-        self.status.config(text=summary + '\nSprawdź podgląd i zaznacz potwierdzenie.')
+        d=self.model.dimensions
+        self.status.config(text=f"Obliczone wymiary: {d['width']:g} × {d['height']:g} mm. Sprawdź kontur i zatwierdź.")
         self.draw()
 
     def confirmed(self):
-        state = 'normal' if self.model and self.confirm.get() else 'disabled'
+        state='normal' if self.model and self.confirm.get() else 'disabled'
         self.transfer.config(state=state)
         self.export.config(state=state)
 
     def draw(self):
-        c = self.canvas
+        c=self.canvas
         c.delete('all')
         if self.model is None:
             return
-        d = self.model.dimensions
-        w, h = d['width'], d['height']
-        cw, ch = max(120, c.winfo_width()), max(120, c.winfo_height())
-        scale = min((cw - 130) / w, (ch - 100) / h)
-        scale = max(scale, 0.001)
-        ox, oy = (cw - w * scale) / 2, (ch - h * scale) / 2
-        points = [v for x, y in self.model.polygon.exterior.coords for v in (ox + x * scale, oy + y * scale)]
-        c.create_polygon(points, fill='#71b7dc', outline='#285b79', width=2)
-        def label(x, y, text):
-            # Białe tło ułatwia odczyt wymiarów również na wąskich ramionach.
-            item = c.create_text(x, y, text=text, fill='#172b40')
-            rect = c.create_rectangle(c.bbox(item), fill='white', outline='')
-            c.tag_lower(rect, item)
-        label(cw / 2, oy - 18, f'Szerokość zewnętrzna: {w:g} mm')
-        c.create_text(ox - 22, ch / 2, text=f'Zewn. {h:g} mm', angle=90)
-        if 'top' in d:
-            label(cw / 2, oy + d['top'] * scale / 2, f"Poprzeczka {d['top']:g} mm")
-            label(ox + d['left'] * scale / 2, oy + h * scale + 15, f"Lewe {d['left']:g}")
-            if 'right' in d:
-                label(ox + (w - d['right'] / 2) * scale, oy + h * scale + 15, f"Prawe {d['right']:g}")
-            label(cw / 2, oy + (d['top'] + h) * scale / 2,
-                  f"Wycięcie\n{d['inner_width']:g} × {d['inner_height']:g} mm")
+        d=self.model.dimensions
+        w,h=d['width'],d['height']
+        cw,ch=max(120,c.winfo_width()),max(120,c.winfo_height())
+        scale=max(.001,min((cw-100)/w,(ch-80)/h))
+        ox,oy=(cw-w*scale)/2,(ch-h*scale)/2
+        c.create_polygon(*[v for x,y in self.model.polygon.exterior.coords for v in (ox+x*scale,oy+y*scale)],fill='#71b7dc',outline='#285b79',width=2)
+        for i,(x,y) in enumerate(self.model.vertices):
+            c.create_text(ox+x*scale+5,oy+y*scale-10,text=f'P{i+1}',anchor='w')
+        c.create_text(cw/2,18,text=f'{w:g} × {h:g} mm')
+        c.create_text(cw/2,ch-16,text=f'{len(self.model.vertices)} narożników • pole {self.model.polygon.area:g} mm²')
 
     def accept(self):
         if self.model and self.confirm.get():
@@ -187,12 +318,12 @@ class SketchTab(ttk.Frame):
     def save(self):
         if not self.model or not self.confirm.get():
             return
-        path = filedialog.asksaveasfilename(defaultextension='.pdf', initialfile='Kontur_1do1.pdf', filetypes=[('PDF 1:1', '*.pdf')])
+        path=filedialog.asksaveasfilename(defaultextension='.pdf',initialfile='Kontur_1do1.pdf',filetypes=[('PDF 1:1','*.pdf')])
         if not path:
             return
-        d = self.model.dimensions
+        d=self.model.dimensions
         try:
-            export_pdf(path, NestResult([self.model.polygon], d['width'], d['height'], 0, 0))
-            messagebox.showinfo('Zapisano kontur', 'PDF ma zewnętrzne wymiary formatki. Zapisano kontur 1:1 bez opisów i linii wymiarowych.')
+            export_pdf(path,NestResult([self.model.polygon],d['width'],d['height'],0,0))
+            messagebox.showinfo('Zapisano kontur','Zapisano kontur w skali 1:1, bez numerów punktów i linii wymiarowych.')
         except Exception as exc:
-            messagebox.showerror('Eksport konturu', str(exc))
+            messagebox.showerror('Eksport',str(exc))

@@ -1,14 +1,16 @@
-"""Budowanie konturów wyłącznie z jawnie podanych wymiarów, bez skali skanu."""
+"""Kontur wielokąta z wymiarów; współrzędne kliknięć nie są wymiarami."""
 from dataclasses import dataclass
 from math import isfinite
-from shapely.geometry import Polygon, box
+from collections import deque
+from shapely.geometry import Polygon
+from shapely import affinity
 
 
 @dataclass(frozen=True)
 class DimensionedShape:
     polygon: object
-    kind: str
     dimensions: dict
+    vertices: list
 
 
 def number(value, label):
@@ -18,67 +20,66 @@ def number(value, label):
         result = float(str(value).strip().replace(',', '.'))
     except ValueError:
         raise ValueError(f'{label}: wpisz liczbę w mm.') from None
-    if not isfinite(result) or result <= 0:
-        raise ValueError(f'{label}: wymiar musi być dodatnią, skończoną liczbą.')
+    if not isfinite(result):
+        raise ValueError(f'{label}: wpisz skończoną liczbę.')
     return result
 
 
-LABELS = {'width': 'Szerokość zewnętrzna', 'height': 'Wysokość zewnętrzna',
-          'top': 'Grubość poprzeczki', 'left': 'Szerokość lewego ramienia',
-          'right': 'Szerokość prawego ramienia', 'inner_width': 'Szerokość wycięcia',
-          'inner_height': 'Głębokość wycięcia'}
+def build_contour(edges, dimensions=()):
+    """Każdy bok: {dx, dy}, puste oznacza nieznane; ostatni wraca do P1.
 
-
-def build_shape(kind, inputs):
-    if kind not in ('U', 'L', 'Prostokąt'):
-        raise ValueError('Wybierz obsługiwany typ konturu: U, L lub Prostokąt.')
-    keys = ['width', 'height']
-    if kind in ('U', 'L'):
-        keys += ['top', 'left', 'inner_width', 'inner_height']
-    if kind == 'U':
-        keys += ['right']
-    dims = {key: number(inputs.get(key), LABELS[key]) for key in keys}
-    # Relacje wymiarowe pozwalają obliczyć brakujący wymiar, ale nigdy
-    # nie uzupełniają go na podstawie proporcji odręcznego obrazka.
-    equations = []
-    if kind in ('U', 'L'):
-        equations = [dict(width=1, left=-1, inner_width=-1),
-                     dict(height=1, top=-1, inner_height=-1)]
-        if kind == 'U':
-            equations[0]['right'] = -1
-    changed = True
-    while changed:
-        changed = False
-        for equation in equations:
-            missing = [key for key in equation if dims[key] is None]
-            if len(missing) == 1:
-                key = missing[0]
-                value = -sum(dims[k] * coefficient for k, coefficient in equation.items() if k != key) / equation[key]
-                if value <= 0:
-                    raise ValueError(f'Sprzeczne wymiary: {LABELS[key]} wynika jako {value:g} mm.')
-                dims[key] = value
-                changed = True
-            elif not missing:
-                total = sum(dims[k] * coefficient for k, coefficient in equation.items())
-                if abs(total) > 0.001:
-                    names = ', '.join(LABELS[k].lower() for k in equation)
-                    raise ValueError(f'Sprzeczne wymiary: {names}. Różnica wynosi {abs(total):g} mm.')
-    missing = [LABELS[key] for key in keys if dims[key] is None]
+    Dodatkowe wymiary: {start, end, axis, value}; indeksy punktów od zera,
+    wartość podpisana w osi X (prawo +) lub Y (dół +).
+    Rozwiązujemy grafy różnic, bez skalowania obrazu i uśredniania konfliktów.
+    """
+    n = len(edges)
+    if n < 3 or n > 500:
+        raise ValueError('Kontur wymaga od 3 do 500 narożników.')
+    graphs = {'x': [[] for _ in edges], 'y': [[] for _ in edges]}
+    def relation(start, end, axis, value):
+        if type(start) is not int or type(end) is not int or not (0 <= start < n and 0 <= end < n) or axis not in graphs:
+            raise ValueError('Nieprawidłowe punkty lub oś wymiaru.')
+        if value is None:
+            raise ValueError('Uzupełnij wartość dodatkowego wymiaru.')
+        graphs[axis][start].append((end, value))
+        graphs[axis][end].append((start, -value))
+    for i, edge in enumerate(edges):
+        for axis in ('x', 'y'):
+            value = number(edge.get('d' + axis), f'Bok P{i+1} → P{(i+1)%n+1}, Δ{axis.upper()}')
+            if value is not None:
+                relation(i, (i + 1) % n, axis, value)
+    for item in dimensions:
+        relation(item.get('start'), item.get('end'), item.get('axis'), number(item.get('value'), 'Wymiar dodatkowy'))
+    coords = {}
+    missing = []
+    for axis, graph in graphs.items():
+        values = {0: 0.0}
+        queue = deque([0])
+        while queue:
+            start = queue.popleft()
+            for end, delta in graph[start]:
+                proposal = values[start] + delta
+                if not isfinite(proposal):
+                    raise ValueError('Wymiary są zbyt duże.')
+                if end in values:
+                    if abs(values[end] - proposal) > 0.001:
+                        raise ValueError(f'Sprzeczne wymiary w osi {axis.upper()} przy P{end+1}; różnica {abs(values[end]-proposal):g} mm. Sprawdź także znaki i zamknięcie konturu.')
+                else:
+                    values[end] = proposal
+                    queue.append(end)
+        missing.extend(f'P{i+1}: {axis.upper()}' for i in range(n) if i not in values)
+        coords[axis] = values
     if missing:
-        raise ValueError('Brak wystarczających wymiarów: ' + ', '.join(missing) + '. Uzupełnij dane; program nie odczytuje proporcji ze szkicu.')
-    w, h = dims['width'], dims['height']
-    if kind == 'Prostokąt':
-        poly = box(0, 0, w, h)
-    else:
-        t, l = dims['top'], dims['left']
-        if kind == 'U':
-            r = dims['right']
-            poly = Polygon([(0, 0), (w, 0), (w, h), (w-r, h), (w-r, t), (l, t), (l, h), (0, h)])
-        else:
-            poly = Polygon([(0, 0), (w, 0), (w, t), (l, t), (l, h), (0, h)])
+        raise ValueError('Brakuje wymiarów określających: ' + ', '.join(missing[:20]) + (', …' if len(missing)>20 else '') + '. Uzupełnij boki lub dodaj wymiar między punktami. Program nie mierzy szkicu.')
+    vertices = [(coords['x'][i], coords['y'][i]) for i in range(n)]
+    if len(set(vertices)) != n:
+        raise ValueError('Co najmniej dwa narożniki mają te same współrzędne. Popraw wymiary.')
+    poly = Polygon(vertices)
     if not poly.is_valid or poly.area <= 0:
-        raise ValueError('Wymiary nie tworzą poprawnego, zamkniętego konturu.')
-    return DimensionedShape(poly, kind, dims)
+        raise ValueError('Kontur przecina sam siebie albo ma zerowe pole. Sprawdź kolejność narożników i wymiary.')
+    x, y, right, bottom = poly.bounds
+    normalized = affinity.translate(poly, -x, -y)
+    return DimensionedShape(normalized, {'width': right-x, 'height': bottom-y}, [(px-x, py-y) for px, py in vertices])
 
 
 def preview_png(path, rotation=0):

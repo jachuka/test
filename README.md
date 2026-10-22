@@ -47,20 +47,36 @@ Układanie używa geometrii obrysów i sprawdza kolizje oraz odstęp, zamiast tr
 
 Obsługa wielu różnych formatek z zadanymi ilościami, otworów i dowolnych kątów obrotu nie jest częścią tej wersji.
 
-## Szkic → kontur
+## Szkic → dowolny kontur
 
-Nowa zakładka odtwarza dokładną geometrię **z wpisanych wymiarów**, bez mierzenia proporcji obrazka. Obsługiwane typy: U, L i prostokąt. Wybierz typ i wpisz wymiary odczytane ze szkicu. Ta wersja nie rozpoznaje automatycznie pisma odręcznego ani wymiarów. Pozostałe kształty wymagają przygotowanego konturu PDF. Tworzenie konturów, import skanów, układanie i eksport działają offline. Program nie odczytuje kluczy API z ustawień systemowych.
+Zakładka tworzy dowolny prosty wielokąt z wymiarów. **Nie ma listy typów U/L/prostokąt.** Obsługiwane są odcinki poziome, pionowe i skośne oraz wklęsłości, maksymalnie 500 narożników. Nie jest to automatyczne rozpoznawanie odręcznego pisma ani automatyczna interpretacja rysunku. Łuki, krzywe i otwory nie są odtwarzane przez ten edytor; dla krzywych użyj istniejącego importu konturu wektorowego PDF.
 
-1. Wczytaj szkic PDF (pierwsza strona) lub obraz PNG/JPG/BMP. Pokazuje się jako odniesienie; podgląd można obracać o 90°. Skala skanu nie jest używana do obliczeń. Wczytanie innego pliku czyści poprzednie wymiary i zatwierdzenie.
-2. Wybierz typ figury i przypisz wymiary ze szkicu do opisanych pól. Szerokość i wysokość są zawsze **zewnętrzne**. Dla U poprzeczka znajduje się u góry, a ramiona są skierowane w dół. Dla L poprzeczka jest u góry, a ramię po lewej; orientację konturu podczas układania można zmieniać dotychczasowym przełącznikiem obrotów.
-3. Pola są początkowo puste. Nieczytelne wymiary trzeba wyjaśnić z klientem i wpisać. Wymiary wycięcia mogą pozostać puste, jeśli da się je wyliczyć z innych podanych wymiarów. Program stosuje wyłącznie relacje wymiarowe: dla U szerokość wycięcia = szerokość zewnętrzna − lewe ramię − prawe ramię; głębokość wycięcia = wysokość zewnętrzna − poprzeczka. Można też podać wymiary wycięcia i wyliczyć brakujący wymiar zewnętrzny. Program nie przyjmuje żadnej wartości na podstawie wyglądu szkicu.
-4. Kliknij **Zbuduj i sprawdź kontur**. Brak danych albo sprzeczność zatrzymuje budowanie. Nadmiarowe wymiary muszą zgadzać się w granicach 0,001 mm.
-5. Porównaj kontur i etykiety wymiarów ze szkicem. Zaznacz **Potwierdzam kształt i wymiary**. Każda zmiana danych unieważnia kontur i zatwierdzenie.
-6. Kliknij **Zatwierdź i przejdź do układania**, żeby użyć konturu w trybie nieregularnym. Alternatywnie zapisz sam kontur jako PDF 1:1, bez opisów i linii wymiarowych.
+1. Wczytaj PDF (pierwsza strona) lub obraz. Obróć podgląd przed zaznaczaniem narożników. **Podgląd 100% / dopasuj** i paski przewijania pozwalają obejrzeć szczegóły.
+2. Klikaj kolejne narożniki po obwodzie formatki, bez linii wymiarowych, podpisów i powtarzania pierwszego punktu. Każdy punkt otrzymuje numer P1, P2 itd. Kliknij **Zamknij kontur**. Czerwony obrys na szkicu pokazuje wyłącznie kolejność punktów.
+3. W tabeli boków wpisz **ΔX i ΔY w mm**: przesunięcie od punktu początkowego do końcowego. W prawo X dodatnie, w lewo ujemne; w dół Y dodatnie, w górę ujemne. Wartość 0 oznacza brak zmiany w danej osi. Puste oznacza brakujący wymiar, który trzeba wyliczyć z innych wpisanych danych lub uzupełnić. Ostatni bok wraca do P1.
+4. Opcja **Podpowiadaj poziom/pion** wpisuje 0 w jednej osi, jeśli kliknięty bok jest wyraźnie poziomy lub pionowy. Jest to edytowalna propozycja kierunku, nigdy pomiar długości. Wyłącz ją dla dowolnych skosów lub popraw 0 ręcznie. Żadna długość ani kąt nie są mierzone z proporcji obrazka.
+5. Jeśli szkic podaje szerokość całkowitą lub wysokość zamiast długości poszczególnych boków, użyj **Dodaj wymiar między punktami**. Wskaż dwa dowolne ponumerowane punkty, oś X lub Y oraz podpisaną różnicę w mm. Wartość 0 pozwala wskazać, że odległe narożniki leżą na tym samym poziomie lub pionie. Dla skosu trzeba podać rzuty ΔX/ΔY lub inne wymiary jednoznacznie je określające; samej długości skośnej nie należy wpisywać jako ΔX.
+6. Kliknij **Zbuduj i sprawdź kontur**. Program rozwiązuje relacje wymiarowe i wylicza brakujące współrzędne, bez pomiaru skanu. Jeśli brakuje danych, wymienia punkty i osie do uzupełnienia. Sprzeczne wymiary, brak zamknięcia, powtarzające się punkty, samoprzecięcia i zerowe pole są odrzucane. Zgodność nadmiarowych wymiarów sprawdzana jest z tolerancją 0,001 mm.
+7. Porównaj wygenerowany kontur i numerację ze szkicem. Wymiary całkowite i pole są obliczane z podanych danych. Zaznacz **Potwierdzam kontur i wymiary**, a następnie przekaż go do układania albo zapisz jako PDF 1:1. Każda zmiana wymiarów unieważnia zatwierdzenie. PDF nie zawiera numerów punktów ani linii wymiarowych.
 
-Przykład BV300: U, szerokość zewnętrzna 440, wysokość zewnętrzna 160, poprzeczka 30, lewe ramię 30, prawe ramię 60 mm. Wynik: wycięcie 350 × 130 mm, pole materiału 24 900 mm². Podanie przy tym głębokości wycięcia 160 mm jest sprzeczne i zostaje odrzucone. Ten kontur porównano z poprawnym PDF użytkownika: odchylenie poniżej 0,001 mm.
+Wczytanie innego szkicu czyści narożniki i wymiary. Przy obrocie szkicu lub otwarciu zamkniętego konturu do edycji program pyta o usunięcie przypisanych wymiarów.
 
-Tryb pozwala zbudować i zweryfikować kontur bez ręcznego rysowania w programie graficznym.
+### Przykład BV300 bez szablonu figury
+
+Zaznacz narożniki w tej kolejności: lewy górny P1, prawy górny P2, prawy dolny P3, wewnętrzny prawy dolny P4, wewnętrzny prawy górny P5, wewnętrzny lewy górny P6, wewnętrzny lewy dolny P7, lewy dolny P8. Po podpowiedzi H/V wpisz:
+
+| Bok | ΔX [mm] | ΔY [mm] |
+| --- | ---: | ---: |
+| P1 → P2 | 440 | 0 |
+| P2 → P3 | 0 | 160 |
+| P3 → P4 | -60 | 0 |
+| P4 → P5 | 0 | pozostaw puste |
+| P5 → P6 | pozostaw puste | 0 |
+| P6 → P7 | 0 | pozostaw puste |
+| P7 → P8 | -30 | 0 |
+| P8 → P1 | 0 | pozostaw puste |
+
+Dodaj dwa wymiary: P1 → P5 w osi Y = 30 mm (poprzeczka) oraz P3 → P7 w osi Y = 0 mm (wspólny dolny poziom). Program obliczy pozostałe wartości: zewnętrzne 440 × 160 mm, wycięcie 350 × 130 mm, pole 24 900 mm². Ten sam mechanizm działa dla dowolnej liczby i układu narożników.
 
 ## Weryfikacja
 
