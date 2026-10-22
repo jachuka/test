@@ -19,7 +19,7 @@ if errorlevel 1 goto :failure
 if errorlevel 1 goto :failure
 ".venv-build\Scripts\python.exe" -m unittest -v
 if errorlevel 1 goto :failure
-".venv-build\Scripts\python.exe" -m PyInstaller --noconfirm --clean --onefile --windowed --name KalkulatorFormatek app.py
+".venv-build\Scripts\python.exe" build_windows.py
 if errorlevel 1 goto :failure
 echo.
 echo Gotowe! Aplikacja: dist\KalkulatorFormatek.exe

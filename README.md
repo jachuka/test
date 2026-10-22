@@ -24,7 +24,7 @@ Jeśli Windows blokuje skrypt BAT, otwórz folder w Eksploratorze, wpisz `cmd` w
 py -3 -m venv .venv-build
 .venv-build\Scripts\python.exe -m pip install PyInstaller==6.22.3 -r requirements.txt
 .venv-build\Scripts\python.exe -m unittest -v
-.venv-build\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name KalkulatorFormatek app.py
+.venv-build\Scripts\python.exe build_windows.py
 ```
 
 Po wyniku testów `OK` można uruchomić ostatnie polecenie. Gotowy EXE nie wymaga Pythona. Przy aktualizacji należy ponownie zbudować EXE. Plik nie jest podpisany cyfrowo; Windows może ograniczyć jego uruchomienie. Budowanie EXE wymaga Windows i nie zostało zweryfikowane w linuksowym środowisku chmurowym.
@@ -49,17 +49,37 @@ Obsługa wielu różnych formatek z zadanymi ilościami, otworów i dowolnych k�
 
 ## Szkic → dowolny kontur
 
-Zakładka tworzy dowolny prosty wielokąt z wymiarów. **Nie ma listy typów U/L/prostokąt.** Obsługiwane są odcinki poziome, pionowe i skośne oraz wklęsłości, maksymalnie 500 narożników. Nie jest to automatyczne rozpoznawanie odręcznego pisma ani automatyczna interpretacja rysunku. Łuki, krzywe i otwory nie są odtwarzane przez ten edytor; dla krzywych użyj istniejącego importu konturu wektorowego PDF.
+Wersja lokalna wykrywa zamknięty obrys i narożniki bez listy typów figur. Dla odręcznych skanów usuwa jasną kolorową kratkę, szuka pól zamkniętych tuszem i łączy pola rozdzielone cienką kreską wymiarową. Upraszcza obrys i proponuje wyrównanie prawie poziomych/pionowych odcinków. **To analiza obrazu z ograniczeniami, nie gwarancja poprawnego odczytu każdego szkicu.** Rysunek z przerwanym obrysem, wieloma elementami, gęstymi adnotacjami, bardzo drobnymi detalami, otworami lub krzywymi może wymagać korekty albo przygotowanego PDF wektorowego.
 
-1. Wczytaj PDF (pierwsza strona) lub obraz. Obróć podgląd przed zaznaczaniem narożników. **Podgląd 100% / dopasuj** i paski przewijania pozwalają obejrzeć szczegóły.
-2. Klikaj kolejne narożniki po obwodzie formatki, bez linii wymiarowych, podpisów i powtarzania pierwszego punktu. Każdy punkt otrzymuje numer P1, P2 itd. Kliknij **Zamknij kontur**. Czerwony obrys na szkicu pokazuje wyłącznie kolejność punktów.
-3. W tabeli boków wpisz **ΔX i ΔY w mm**: przesunięcie od punktu początkowego do końcowego. W prawo X dodatnie, w lewo ujemne; w dół Y dodatnie, w górę ujemne. Wartość 0 oznacza brak zmiany w danej osi. Puste oznacza brakujący wymiar, który trzeba wyliczyć z innych wpisanych danych lub uzupełnić. Ostatni bok wraca do P1.
-4. Opcja **Podpowiadaj poziom/pion** wpisuje 0 w jednej osi, jeśli kliknięty bok jest wyraźnie poziomy lub pionowy. Jest to edytowalna propozycja kierunku, nigdy pomiar długości. Wyłącz ją dla dowolnych skosów lub popraw 0 ręcznie. Żadna długość ani kąt nie są mierzone z proporcji obrazka.
-5. Jeśli szkic podaje szerokość całkowitą lub wysokość zamiast długości poszczególnych boków, użyj **Dodaj wymiar między punktami**. Wskaż dwa dowolne ponumerowane punkty, oś X lub Y oraz podpisaną różnicę w mm. Wartość 0 pozwala wskazać, że odległe narożniki leżą na tym samym poziomie lub pionie. Dla skosu trzeba podać rzuty ΔX/ΔY lub inne wymiary jednoznacznie je określające; samej długości skośnej nie należy wpisywać jako ΔX.
-6. Kliknij **Zbuduj i sprawdź kontur**. Program rozwiązuje relacje wymiarowe i wylicza brakujące współrzędne, bez pomiaru skanu. Jeśli brakuje danych, wymienia punkty i osie do uzupełnienia. Sprzeczne wymiary, brak zamknięcia, powtarzające się punkty, samoprzecięcia i zerowe pole są odrzucane. Zgodność nadmiarowych wymiarów sprawdzana jest z tolerancją 0,001 mm.
-7. Porównaj wygenerowany kontur i numerację ze szkicem. Wymiary całkowite i pole są obliczane z podanych danych. Zaznacz **Potwierdzam kontur i wymiary**, a następnie przekaż go do układania albo zapisz jako PDF 1:1. Każda zmiana wymiarów unieważnia zatwierdzenie. PDF nie zawiera numerów punktów ani linii wymiarowych.
+### Automatyczne wykrywanie i pytania o brakujące wymiary
 
-Wczytanie innego szkicu czyści narożniki i wymiary. Przy obrocie szkicu lub otwarciu zamkniętego konturu do edycji program pyta o usunięcie przypisanych wymiarów.
+1. Wczytaj szkic PDF (pierwsza strona) lub obraz. Opcja **Odczytuj automatycznie po wczytaniu** jest domyślnie włączona. Możesz też użyć **Wykryj obrys i odczytaj wymiary lokalnie**. Odczyt działa w tle i nie wysyła danych do internetu.
+2. Na szkicu pojawi się czerwony obrys z numerami narożników. Sprawdź go. Jeśli wykryto kilka obrysów, wybierz właściwy z listy. Rozpoznane narożniki nie wymagają ręcznego klikania. Program nie dobiera szablonu U/L ani innej figury.
+3. Jeśli dostępny jest Tesseract, program odczyta cyfry w czterech orientacjach. Liczbę dopasuje do wymiaru tylko wtedy, gdy w pobliżu znajdzie linię wymiarową, a jej końce odpowiadają poziomom narożników. Numery produktów i luźne napisy bez takiego dopasowania są pomijane. Wartości oznaczone przez OCR oceną co najmniej 85 i bez konkurencyjnych interpretacji trafiają do relacji wymiarowych; słabsze lub sprzeczne odczyty stają się pytaniami. Ocena OCR nie jest gwarancją poprawności — zawsze sprawdź wymiary przed produkcją. Wszystkie odczyty są interpretowane w mm.
+4. Kliknij **Uzupełnij tylko brakujące wymiary**. Program pyta o niejednoznaczne odczyty oraz minimalny zestaw pozostałych relacji potrzebnych do określenia konturu. Niebieska strzałka pokazuje na szkicu punkty i oś bieżącego pytania. W przypadku niepewnego OCR proponuje odczytaną liczbę do potwierdzenia lub poprawienia. Nie pyta ponownie o różnicę współrzędnych, która wynika już z innych danych. Anulowanie zachowuje dotychczasową pracę.
+5. Długości nie są obliczane ze skali, kratki ani proporcji skanu. Współrzędne obrazu służą do rozpoznania kolejności, kierunków, wyrównania i przypisania opisanych wymiarów. Brakujący wymiar rzeczywisty zawsze wymaga innych danych lub odpowiedzi użytkownika.
+6. Po rozwiązaniu wymiarów aplikacja pokazuje dokładny kontur. Sprawdź go i zaznacz **Potwierdzam kontur i wymiary**. Następnie przekaż go do układania albo zapisz PDF 1:1. Każda zmiana danych unieważnia zatwierdzenie.
+
+Na oryginalnym skanie BPV300 sprawdzono rzeczywisty odczyt lokalnym Tesseract: 8 narożników wykrytych automatycznie, odczyty 160 i 30 przypisane bez pytania, niepewne 30 i 60 wymagające potwierdzenia oraz pytanie o nierozpoznane 440. Po trzech odpowiedziach powstaje kontur 440 × 160 mm (w orientacji skanu 160 × 440), o polu 24 900 mm², zgodny z poprawnym PDF użytkownika z odchyleniem poniżej 0,001 mm po obrocie. Wyniku tego nie należy traktować jako oceny niezawodności na innych szkicach.
+
+### Tesseract na Windows — opcjonalny, lokalny OCR
+
+Wykrywanie obrysu działa bez dodatkowego programu. **Do automatycznego odczytu cyfr potrzebny jest Tesseract OCR z językiem angielskim (`eng`).** Nie wymaga klucza API ani opłat za zapytania. Informacje o instalatorach Windows są w dokumentacji projektu: https://tesseract-ocr.github.io/tessdoc/Installation.html (sekcja Windows; projekt wskazuje tam dostępne kompilacje).
+
+Aplikacja szuka Tesseract w PATH oraz standardowych folderach `Tesseract-OCR` w Program Files i LocalAppData/Programs. W typowej instalacji jest to `C:\Program Files\Tesseract-OCR\tesseract.exe`. Jeśli go nie znajdzie albo OCR nie odczyta cyfr, nadal wykryje kontur i poprosi o wymiary. Po instalacji uruchom kalkulator ponownie i ponów odczyt.
+
+Do budowania używaj `Zbuduj_EXE.bat` albo `.venv-build\Scripts\python.exe build_windows.py`. Jeśli Tesseract jest zainstalowany na komputerze budującym, skrypt dołącza jego katalog (program, biblioteki, dane i pliki licencji) do EXE. Powiększa to EXE, ale pozwala używać OCR na innym komputerze bez osobnej instalacji. Bez Tesseract budowany jest EXE z samym wykrywaniem obrysu i pytaniami o wymiary. Dotychczasowe ręczne polecenie PyInstaller nie dołącza Tesseract — na takim komputerze korzystanie z OCR wymaga oddzielnie zainstalowanego silnika. Budowania EXE z Tesseract na Windows nie zweryfikowano w linuksowym środowisku chmurowym.
+
+### Ręczna korekta i dowolny kontur wielokątny
+
+Możesz wyłączyć automatyczny odczyt i wskazać narożniki ręcznie. Obsługiwane są odcinki poziome, pionowe i skośne oraz wklęsłości, maksymalnie 500 narożników. Edytor nie odtwarza dokładnych łuków ani otworów; dla krzywych użyj importu konturu wektorowego PDF.
+
+1. Klikaj narożniki po obwodzie bez linii wymiarowych i bez powtarzania pierwszego punktu. Zamknij kontur. **Podgląd 100% / dopasuj** i paski przewijania ułatwiają pracę. Obróć podgląd przed oznaczaniem punktów.
+2. W tabeli podaj **ΔX i ΔY w mm**: w prawo/dół dodatnie, w lewo/górę ujemne. 0 oznacza tę samą współrzędną. Puste pole to wymiar nieznany. Ostatni bok wraca do P1. Podpowiedź H/V wpisuje tylko edytowalne zera kierunków, nigdy długości.
+3. Przez **Dodaj wymiar między punktami** można określić całkowitą szerokość, wysokość albo wyrównanie (wartość 0). Dla skosu wpisuj rzuty ΔX/ΔY, nie długość skośną.
+4. **Zbuduj i sprawdź kontur** rozwiązuje relacje wymiarowe bez mierzenia zdjęcia. Brak danych, sprzeczność, samoprzecięcia, powtarzające się punkty i zerowe pole są zgłaszane. Tolerancja zgodności wymiarów: 0,001 mm.
+
+Wczytanie innego pliku czyści dotychczasowy kontur. Obrót lub otwarcie zamkniętego konturu do edycji wymaga potwierdzenia utraty przypisanych wymiarów. Zmiana szkicu lub danych podczas odczytu powoduje pominięcie nieaktualnego wyniku.
 
 ### Przykład BV300 bez szablonu figury
 

@@ -90,7 +90,7 @@ def read_vector_pdf(path):
     return sorted(result, key=lambda p: -p.area)
 
 
-def trace_silhouettes(image, threshold=180):
+def trace_silhouettes(image, threshold=180, normalize_result=True):
     """Śledzenie krawędzi ciemnych pikseli bez OpenCV i dodatkowych DLL."""
     import numpy as np
     if not 1 <= threshold <= 254:
@@ -142,7 +142,8 @@ def trace_silhouettes(image, threshold=180):
             continue
         poly = Polygon(ring)
         if poly.is_valid:
-            result.append(normalize(poly.simplify(0.5, preserve_topology=True)))
+            poly = poly.simplify(0.5, preserve_topology=True)
+            result.append(normalize(poly) if normalize_result else poly)
     return sorted(result, key=lambda p: -p.area)[:100]
 
 
