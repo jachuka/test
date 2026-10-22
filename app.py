@@ -2,17 +2,23 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 from packing import calculate
+from irregular_ui import IrregularTab
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Formatki — kalkulator arkusza")
-        self.geometry("1100x740")
-        self.minsize(850, 600)
+        self.geometry("1200x860")
+        self.minsize(950, 800)
         self.layout = None
         self.dimensions = None
-        panel = ttk.Frame(self, padding=20)
+        tabs = ttk.Notebook(self)
+        tabs.pack(fill="both", expand=True)
+        rectangles = ttk.Frame(tabs)
+        tabs.add(rectangles, text="Prostokąty")
+        tabs.add(IrregularTab(tabs), text="Kształty nieregularne / PDF")
+        panel = ttk.Frame(rectangles, padding=20)
         panel.pack(side="left", fill="y")
         ttk.Label(panel, text="Kalkulator formatek", font=("Arial", 18, "bold")).pack(anchor="w", pady=(0, 20))
         self.fields = []
@@ -28,13 +34,13 @@ class App(tk.Tk):
         self.result = ttk.Label(panel, text="", wraplength=270, font=("Arial", 12))
         self.result.pack(anchor="w", pady=20)
         ttk.Label(panel, text="Układy pasowe: wynik może być niższy od optimum dla układów nieregularnych. Odstęp oznacza wolną przestrzeń między krawędziami; uwzględnij w nim szerokość cięcia.", wraplength=270).pack(anchor="w")
-        right = ttk.Frame(self, padding=15)
+        right = ttk.Frame(rectangles, padding=15)
         right.pack(side="right", fill="both", expand=True)
         ttk.Label(right, text="Podgląd arkusza • wszystkie wymiary w milimetrach").pack(anchor="w")
         self.canvas = tk.Canvas(right, background="#e9eef4", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True, pady=12)
         self.canvas.bind("<Configure>", self.draw)
-        self.bind("<Return>", lambda _: self.compute())
+        rectangles.bind("<Return>", lambda _: self.compute())
         self.compute()
 
     def compute(self):

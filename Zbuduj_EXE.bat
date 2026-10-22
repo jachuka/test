@@ -15,7 +15,7 @@ if not exist ".venv-build\Scripts\python.exe" (
 ".venv-build\Scripts\python.exe" -c "import tkinter; t=tkinter.Tk(); t.withdraw(); t.destroy()"
 if errorlevel 1 goto :failure
 ".venv-build\Scripts\python.exe" --version
-".venv-build\Scripts\python.exe" -m pip install "PyInstaller==6.22.3"
+".venv-build\Scripts\python.exe" -m pip install "PyInstaller==6.22.3" -r requirements.txt
 if errorlevel 1 goto :failure
 ".venv-build\Scripts\python.exe" -m unittest -v
 if errorlevel 1 goto :failure

@@ -1,31 +1,58 @@
 # Kalkulator formatek
 
-Desktopowa aplikacja w języku polskim. Wymaga Python 3.10+ z modułem Tkinter (w instalatorze Pythona na Windows zaznacz Tcl/Tk).
+Desktopowa aplikacja dla Windows, z polskim interfejsem. Dwa tryby: prostokąty oraz powielanie jednego nieregularnego obrysu. Domyślny arkusz: 3050 × 2050 mm. Wszystkie wymiary w mm, akceptowany przecinek dziesiętny.
 
-Uruchom w katalogu projektu:
+## Uruchomienie z Pythona
 
-```sh
-python app.py
+Wymagany Python 3.10–3.15 z Tkinter (Tcl/Tk w instalatorze Windows). W folderze projektu:
+
+```bat
+py -3 -m venv .venv-build
+.venv-build\Scripts\python.exe -m pip install -r requirements.txt
+.venv-build\Scripts\python.exe app.py
 ```
 
-Na Windows można też użyć `py app.py`. Aplikacja działa lokalnie, bez internetu i dodatkowych bibliotek Python.
+Zależności: PyMuPDF (odczyt i zapis PDF), Shapely (geometria), OpenCV (odczyt skanów). Instalacja wymaga internetu; obliczenia i import/eksport działają lokalnie.
 
 ## Plik EXE dla Windows 11
 
-1. Pobierz wszystkie pliki projektu do jednego folderu i rozpakuj archiwum, jeśli korzystasz z ZIP.
-2. Jednorazowo zainstaluj Python 3.10+ z python.org, z komponentami Tcl/Tk i Python Launcher.
-3. Kliknij dwukrotnie `Zbuduj_EXE.bat`. Pierwsze budowanie wymaga internetu do pobrania PyInstaller i jego zależności.
-4. Po pomyślnym zakończeniu w folderze `dist` znajdziesz `KalkulatorFormatek.exe`.
-5. Przenieś plik EXE np. na pulpit i uruchamiaj dwukrotnym kliknięciem. Komputer uruchamiający gotowy EXE nie potrzebuje Pythona.
+Pobierz Code → Download ZIP z GitHub, rozpakuj do nowego folderu i uruchom `Zbuduj_EXE.bat`. Skrypt instaluje zależności w `.venv-build`, sprawdza Tkinter, uruchamia testy i buduje `dist\KalkulatorFormatek.exe`.
 
-Budowanie odbywa się lokalnie na Windows, w osobnym środowisku `.venv-build`. Skrypt sprawdza Tkinter, uruchamia testy i pakuje aplikację bez okna konsoli. Plik nie jest podpisany cyfrowo, więc Windows może wyświetlić komunikat o nieznanym wydawcy. Budowanie i uruchomienie EXE wymagają sprawdzenia na Windows; nie zostały zweryfikowane w linuksowym środowisku chmurowym.
+Jeśli Windows blokuje skrypt BAT, otwórz folder w Eksploratorze, wpisz `cmd` w pasku adresu i wykonaj kolejno:
 
-Podaj szerokość i wysokość arkusza, szerokość i wysokość jednej prostokątnej formatki, odstęp między krawędziami formatek i jednakowy margines od czterech brzegów. Wszystkie wartości są w mm; akceptowany jest przecinek dziesiętny. Obrót o 90° można wyłączyć, np. ze względu na kierunek materiału.
-
-Wynik pokazuje liczbę formatek, wykorzystanie całej powierzchni arkusza i podgląd rozmieszczenia. Przerywana linia oznacza margines. Kalkulator porównuje poziome i pionowe układy pasowe, również z mieszanymi orientacjami. Podaje najlepszy znaleziony wynik, bez gwarancji globalnego optimum dowolnego pakowania prostokątów. W odstępie należy uwzględnić wymagany zapas na cięcie. Limit podglądu: 50 000 formatek.
-
-Testy obliczeń:
-
-```sh
-python -m unittest -v
+```bat
+py -3 -m venv .venv-build
+.venv-build\Scripts\python.exe -m pip install PyInstaller==6.22.3 -r requirements.txt
+.venv-build\Scripts\python.exe -m unittest -v
+.venv-build\Scripts\python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name KalkulatorFormatek app.py
 ```
+
+Po wyniku testów `OK` można uruchomić ostatnie polecenie. Gotowy EXE nie wymaga Pythona. Przy aktualizacji należy ponownie zbudować EXE. Plik nie jest podpisany cyfrowo; Windows może ograniczyć jego uruchomienie. Budowanie EXE wymaga Windows i nie zostało zweryfikowane w linuksowym środowisku chmurowym.
+
+## Prostokąty
+
+Wprowadź wymiary arkusza i jednej formatki, odstęp między krawędziami i margines od wszystkich brzegów. Obrót o 90° można wyłączyć, np. ze względu na kierunek materiału. Kalkulator porównuje poziome i pionowe układy pasowe, również z mieszanymi orientacjami; nie gwarantuje optimum dowolnego pakowania. Limit podglądu: 50 000 formatek.
+
+## Kształty nieregularne / PDF
+
+1. Wybierz zakładkę **Kształty nieregularne / PDF**.
+2. Wczytaj **PDF wektorowy 1:1**. Odczytywana jest wyłącznie pierwsza strona i zamknięte, poprawne geometrycznie obrysy. Z CorelDRAW wyeksportuj sam kontur jako krzywą w PDF 1:1; bez napisów i znaczników. CDR nie jest obsługiwany.
+3. Jeśli plik zawiera kilka obrysów, wybierz właściwy z listy. Podgląd i rozmiar pozwalają odróżnić formatkę od ramki strony. Jeden wybrany obrys jest jedną formatką; pozostałe nie są łączone w grupę.
+4. Alternatywnie wczytaj skan PDF lub PNG/JPG/BMP: ciemny, zamknięty obrys lub sylwetka na białym tle. Ustaw próg ciemności (domyślnie 180), wybierz kontur i podaj jego **rzeczywistą szerokość w mm**. Skala DPI skanu nie jest uznawana za wiarygodną. Program zachowuje proporcje obrazu; nie koryguje perspektywy ani zniekształceń skanera. Koniecznie sprawdź obrys i wysokość w podglądzie. Gdy kalibracja zostanie anulowana, wybierz obrys ponownie.
+5. Ustaw arkusz, odstęp i margines. Włączenie obrotów dopuszcza 0°, 90°, 180°, 270°; odbicie lustrzane nie jest stosowane.
+6. Kliknij **Ułóż formatki**. Szukanie odbywa się w tle, do około 15 sekund lub 1000 kopii; można je przerwać i zachować znaleziony układ. Wynik oznaczony jako częściowy może pomieścić więcej formatek przy dalszej optymalizacji.
+7. Kliknij **Zapisz układ do PDF 1:1**. PDF ma rozmiar arkusza i czarne obrysy wektorowe; nie zawiera ramki arkusza, wymiarów ani podpisów jako linii cięcia. Eksport zapisuje widoczny wynik z wymiarami podanymi w opisie wyniku, również jeśli później zmienisz pola formularza bez ponownego obliczenia. Maksymalny bok eksportowanego arkusza: 5080 mm. Przy druku wybierz rzeczywisty rozmiar / 100%, bez dopasowania do strony.
+
+Układanie używa geometrii obrysów i sprawdza kolizje oraz odstęp, zamiast traktować każdy obrys jako prostokąt. Jest heurystyczne: nie gwarantuje największej możliwej liczby. Krzywe są przybliżane odcinkami z tolerancją 0,05 mm; dla odstępu stosowany jest dodatkowy zapas 0,1 mm. Otwory są traktowane jako pełny materiał; nie są eksportowane jako wycięcia. Skan jest aproksymacją obrysu, nie dokładnym plikiem produkcyjnym. Przed cięciem zweryfikuj wymiary i geometrię w swoim programie produkcyjnym. W odstępie uwzględnij szerokość cięcia.
+
+Obsługa wielu różnych formatek z zadanymi ilościami, otworów i dowolnych kątów obrotu nie jest częścią tej wersji.
+
+## Weryfikacja
+
+```bat
+.venv-build\Scripts\python.exe -m unittest -v
+```
+
+Testy obejmują prostokąty, nieregularne wcięcia, układanie trójkątów gęściej niż ich prostokąty otaczające, odstępy i marginesy, obrót, anulowanie, import PDF z krzywymi, skan i skalę eksportu PDF 1:1.
+
+PyMuPDF jest dostępny na licencji AGPL lub komercyjnej. Przed dystrybucją aplikacji uwzględnij warunki licencji jej zależności.
