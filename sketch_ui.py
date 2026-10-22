@@ -65,31 +65,39 @@ class SketchTab(ttk.Frame):
         ttk.Button(panel,text='Diagnostyka OCR — pokaż przyczynę',command=self.show_ocr_diagnostics).pack(fill='x',pady=2)
         ttk.Button(panel,text='Wskaż zainstalowany tesseract.exe',command=self.choose_tesseract).pack(fill='x',pady=2)
         ttk.Button(panel, text='Uzupełnij tylko brakujące wymiary', command=self.ask_missing).pack(fill='x', pady=3)
-        ttk.Label(panel, text='1. Klikaj narożniki po obwodzie (bez powtarzania pierwszego).\n2. Zamknij kontur.\n3. Wpisz różnice współrzędnych w mm lub wymiary między punktami.', wraplength=325).pack(anchor='w', pady=7)
+        for text,command in [('Obróć szkic o 90°',self.rotate_preview),('Podgląd 100% / dopasuj',self.toggle_size)]:
+            ttk.Button(panel,text=text,command=command).pack(fill='x',pady=2)
+        manual_container=ttk.Frame(panel)
+        manual_container.pack(fill='x',pady=5)
+        self.manual_enabled=tk.BooleanVar(value=False)
+        ttk.Checkbutton(manual_container,text='Korekta ręczna (opcjonalnie)',variable=self.manual_enabled,command=self.toggle_manual).pack(anchor='w')
+        self.manual_frame=ttk.Frame(manual_container)
+        ttk.Label(self.manual_frame, text='1. Klikaj narożniki po obwodzie (bez powtarzania pierwszego).\n2. Zamknij kontur.\n3. Wpisz różnice współrzędnych w mm lub wymiary między punktami.', wraplength=325).pack(anchor='w', pady=7)
         self.orthogonal = tk.BooleanVar(value=True)
-        ttk.Checkbutton(panel, text='Podpowiadaj poziom/pion (tylko kierunek)', variable=self.orthogonal).pack(anchor='w')
-        for text, command in [('Zamknij kontur', self.close_outline), ('Cofnij ostatni narożnik', self.undo), ('Wyczyść narożniki i wymiary', self.clear), ('Obróć szkic o 90°', self.rotate_preview), ('Podgląd 100% / dopasuj', self.toggle_size)]:
-            ttk.Button(panel, text=text, command=command).pack(fill='x', pady=2)
-        ttk.Label(panel, text='ΔX: w prawo +, w lewo −. ΔY: w dół +, w górę −.\n0 oznacza tę samą współrzędną. Puste pole = nieznany wymiar. Długości nie są mierzone z obrazka.', wraplength=325).pack(anchor='w', pady=7)
-        self.edges_frame = ttk.Frame(panel)
+        ttk.Checkbutton(self.manual_frame, text='Podpowiadaj poziom/pion (tylko kierunek)', variable=self.orthogonal).pack(anchor='w')
+        for text, command in [('Zamknij kontur', self.close_outline), ('Cofnij ostatni narożnik', self.undo), ('Wyczyść narożniki i wymiary', self.clear)]:
+            ttk.Button(self.manual_frame, text=text, command=command).pack(fill='x', pady=2)
+        ttk.Label(self.manual_frame, text='ΔX: w prawo +, w lewo −. ΔY: w dół +, w górę −.\n0 oznacza tę samą współrzędną. Puste pole = nieznany wymiar. Długości nie są mierzone z obrazka.', wraplength=325).pack(anchor='w', pady=7)
+        self.edges_frame = ttk.Frame(self.manual_frame)
         self.edges_frame.pack(fill='x')
-        ttk.Label(panel, text='Wymiary dodatkowe / wyrównanie punktów:').pack(anchor='w', pady=(8, 2))
-        self.extra_list = tk.Listbox(panel, height=4, width=36)
+        ttk.Label(self.manual_frame, text='Wymiary dodatkowe / wyrównanie punktów:').pack(anchor='w', pady=(8, 2))
+        self.extra_list = tk.Listbox(self.manual_frame, height=4, width=36)
         self.extra_list.pack(fill='x')
-        ttk.Button(panel, text='Dodaj wymiar między punktami', command=self.add_dimension).pack(fill='x', pady=2)
-        ttk.Button(panel, text='Usuń zaznaczony wymiar', command=self.remove_dimension).pack(fill='x', pady=2)
-        ttk.Button(panel, text='Zbuduj i sprawdź kontur', command=self.build).pack(fill='x', pady=8)
+        ttk.Button(self.manual_frame, text='Dodaj wymiar między punktami', command=self.add_dimension).pack(fill='x', pady=2)
+        ttk.Button(self.manual_frame, text='Usuń zaznaczony wymiar', command=self.remove_dimension).pack(fill='x', pady=2)
+        ttk.Button(self.manual_frame, text='Zbuduj i sprawdź kontur', command=self.build).pack(fill='x', pady=8)
         self.confirm = tk.BooleanVar(value=False)
         ttk.Checkbutton(panel, text='Potwierdzam kontur i wymiary', variable=self.confirm, command=self.confirmed).pack(anchor='w')
         self.transfer = ttk.Button(panel, text='Zatwierdź i przejdź do układania', command=self.accept, state='disabled')
         self.transfer.pack(fill='x', pady=3)
         self.export = ttk.Button(panel, text='Zapisz sam kontur do PDF 1:1', command=self.save, state='disabled')
         self.export.pack(fill='x', pady=3)
-        self.status = ttk.Label(panel, text='Obsługiwane są kontury z odcinków, w tym skośnych i wklęsłych. Łuki wymagają konturu wektorowego PDF. Brak automatycznego odczytu pisma.', wraplength=325)
+        self.status = ttk.Label(panel, text='Wczytaj szkic, sprawdź wykryty obrys i uzupełnij tylko brakujące wymiary.', wraplength=325)
         self.status.pack(anchor='w', pady=5)
         content = ttk.Frame(self, padding=8)
         content.pack(side='right', fill='both', expand=True)
-        ttk.Label(content, text='Szkic: zaznacz kolejne narożniki; czerwone odcinki wskazują ich kolejność').pack(anchor='w')
+        self.source_heading=ttk.Label(content,text='Szkic: sprawdź automatycznie wykryty czerwony obrys')
+        self.source_heading.pack(anchor='w')
         holder = ttk.Frame(content)
         holder.pack(fill='both', expand=True)
         holder.rowconfigure(0, weight=1)
@@ -109,13 +117,21 @@ class SketchTab(ttk.Frame):
         self.canvas.bind('<Configure>', lambda _: self.draw())
         self.after(100, self.poll_auto)
 
+    def toggle_manual(self):
+        if self.manual_enabled.get():
+            self.manual_frame.pack(fill='x')
+            self.source_heading.config(text='Korekta ręczna: klikaj narożniki po obwodzie szkicu')
+        else:
+            self.manual_frame.pack_forget()
+            self.source_heading.config(text='Szkic: sprawdź automatycznie wykryty czerwony obrys')
+
     def invalidate(self, *args):
         self.version += 1
         self.model = None
         self.confirm.set(False)
         self.transfer.config(state='disabled')
         self.export.config(state='disabled')
-        self.status.config(text='Zbuduj kontur z aktualnych wymiarów. Współrzędne kliknięć określają tylko kolejność i podpowiedź kierunku, nie długości.')
+        self.status.config(text='Zbuduj kontur z aktualnych wymiarów.' if self.manual_enabled.get() else 'Sprawdź wykryty obrys i kliknij „Uzupełnij tylko brakujące wymiary”.')
         self.draw()
 
     def load(self):
@@ -313,7 +329,7 @@ class SketchTab(ttk.Frame):
             self.extra.append(item);self.render_extra();self.invalidate()
 
     def click(self, event):
-        if self.source_image is None or self.closed:
+        if not self.manual_enabled.get() or self.source_image is None or self.closed:
             return
         if len(self.points) >= 500:
             messagebox.showinfo('Limit narożników', 'Kontur może mieć maksymalnie 500 narożników.')

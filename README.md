@@ -80,7 +80,7 @@ Na komputerze testowym był zainstalowany Tesseract 5.5.0 z językiem `eng`. Wyn
 
 ### Ręczna korekta i dowolny kontur wielokątny
 
-Możesz wyłączyć automatyczny odczyt i wskazać narożniki ręcznie. Obsługiwane są odcinki poziome, pionowe i skośne oraz wklęsłości, maksymalnie 500 narożników. Edytor nie odtwarza dokładnych łuków ani otworów; dla krzywych użyj importu konturu wektorowego PDF.
+Domyślnie panel ręcznego rysowania i tabela ΔX/ΔY są ukryte. Aby poprawić nieudany odczyt, rozwiń **Korekta ręczna (opcjonalnie)**. Możesz wtedy wyłączyć automatyczny odczyt i wskazać narożniki ręcznie. Klikanie nowych narożników jest aktywne tylko w trybie korekty; samo rozwinięcie lub zwinięcie panelu nie zmienia konturu ani wymiarów. Obsługiwane są odcinki poziome, pionowe i skośne oraz wklęsłości, maksymalnie 500 narożników. Edytor nie odtwarza dokładnych łuków ani otworów; dla krzywych użyj importu konturu wektorowego PDF.
 
 1. Klikaj narożniki po obwodzie bez linii wymiarowych i bez powtarzania pierwszego punktu. Zamknij kontur. **Podgląd 100% / dopasuj** i paski przewijania ułatwiają pracę. Obróć podgląd przed oznaczaniem punktów.
 2. W tabeli podaj **ΔX i ΔY w mm**: w prawo/dół dodatnie, w lewo/górę ujemne. 0 oznacza tę samą współrzędną. Puste pole to wymiar nieznany. Ostatni bok wraca do P1. Podpowiedź H/V wpisuje tylko edytowalne zera kierunków, nigdy długości.
