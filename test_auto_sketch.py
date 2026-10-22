@@ -1,6 +1,6 @@
 import subprocess
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from unittest.mock import patch
 import numpy as np
 import pymupdf as fitz
@@ -76,15 +76,18 @@ class AutoSketchTests(unittest.TestCase):
     def test_ocr_is_local_subprocess_and_ignores_untrusted_text(self,run):
         tsv='level\tleft\ttop\twidth\theight\tconf\ttext\n5\t10\t10\t20\t10\t99\t160\n5\t10\t10\t20\t10\t99\tBPV300\n'
         run.return_value=subprocess.CompletedProcess([],0,tsv.encode(),b'')
-        words=ocr_numbers(np.zeros((100,120),dtype=bool),Path('/tmp/tesseract-test'))
-        self.assertEqual(len(words),4)
-        self.assertTrue(all(word.value==160 for word in words))
-        self.assertEqual(run.call_count,4)
-        for call in run.call_args_list:
-            self.assertIsInstance(call.args[0],list)
-            self.assertEqual(call.args[0][0],'/tmp/tesseract-test')
-            self.assertNotIn('shell',call.kwargs)
-            self.assertEqual(call.kwargs['timeout'],20)
+        for executable in (PureWindowsPath('C:/Tesseract OCR/tesseract.exe'), PurePosixPath('/opt/tesseract-test')):
+            with self.subTest(executable=str(executable)):
+                run.reset_mock()
+                words=ocr_numbers(np.zeros((100,120),dtype=bool),executable)
+                self.assertEqual(len(words),4)
+                self.assertTrue(all(word.value==160 for word in words))
+                self.assertEqual(run.call_count,4)
+                for call in run.call_args_list:
+                    self.assertIsInstance(call.args[0],list)
+                    self.assertEqual(call.args[0][0],str(executable))
+                    self.assertNotIn('shell',call.kwargs)
+                    self.assertEqual(call.kwargs['timeout'],20)
 
     @patch('auto_sketch.subprocess.run')
     def test_ocr_failure_leaves_dimensions_unknown(self,run):
