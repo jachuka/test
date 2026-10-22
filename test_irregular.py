@@ -93,6 +93,23 @@ class IrregularTests(unittest.TestCase):
                     self.assertGreaterEqual(shape.distance(result.shapes[j]), 5 - 1e-6)
                     self.assertLess(shape.intersection(result.shapes[j]).area, 1e-6)
 
+    def test_asymmetric_frame_pairs_with_boundary_alignment(self):
+        # Ułamkowe współrzędne odpowiadają precyzji konturów z eksportu PDF.
+        poly = Polygon([(0, 0), (34.00033368, 0), (34.00033368, 162.99961141),
+                        (114.99991152, 162.99961141), (114.99991152, 245.99999305),
+                        (0, 245.99999305)])
+        result = nest(poly, 3050, 2050, 5, 10, seconds=3)
+        self.assertGreaterEqual(len(result.shapes), 304)
+        from shapely.strtree import STRtree
+        tree = STRtree(result.shapes)
+        for i, shape in enumerate(result.shapes):
+            self.assertTrue(box(10, 10, 3040, 2040).covers(shape))
+            self.assertAlmostEqual(shape.area, poly.area, places=5)
+            for j in tree.query(shape.buffer(5.2)):
+                if j > i:
+                    self.assertGreaterEqual(shape.distance(result.shapes[j]), 5 - 1e-6)
+                    self.assertLess(shape.intersection(result.shapes[j]).area, 1e-6)
+
     def test_cancel(self):
         cancel = threading.Event()
         cancel.set()

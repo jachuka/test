@@ -218,8 +218,16 @@ def _greedy_nest(poly, width, height, gap, margin, rotate=True, seconds=15, canc
                 for x, y in vertices:
                     for px, py in points:
                         tx, ty = x - px, y - py
-                        if margin - 1e-7 <= tx <= width - margin - vw + 1e-7 and margin - 1e-7 <= ty <= height - margin - vh + 1e-7:
+                        fits_x = margin - 1e-7 <= tx <= width - margin - vw + 1e-7
+                        fits_y = margin - 1e-7 <= ty <= height - margin - vh + 1e-7
+                        if fits_x and fits_y:
                             candidates.add((round(max(margin, tx), 6), round(max(margin, ty), 6)))
+                        # Dopasowanie wcięcia przy krawędzi arkusza nie wymaga
+                        # jednoczesnego wyrównania obu współrzędnych wierzchołków.
+                        if fits_x:
+                            candidates.add((round(max(margin, tx), 6), margin))
+                        if fits_y:
+                            candidates.add((margin, round(max(margin, ty), 6)))
                 _, _, right, bottom = obstacle.bounds
                 candidates.add((right, margin))
                 candidates.add((margin, bottom))
@@ -231,7 +239,7 @@ def _greedy_nest(poly, width, height, gap, margin, rotate=True, seconds=15, canc
                 if not sheet.covers(candidate):
                     continue
                 indices = tree.query(candidate.buffer(clearance))
-                if any(candidate.intersection(result.shapes[i]).area > 1e-9 or candidate.distance(result.shapes[i]) < clearance - 1e-7 for i in indices):
+                if any(candidate.intersection(result.shapes[i]).area > 1e-9 or candidate.distance(result.shapes[i]) < clearance - 1e-6 for i in indices):
                     continue
                 score = (candidate.bounds[3], candidate.bounds[2], y, x)
                 if best is None or score < best[0]:
