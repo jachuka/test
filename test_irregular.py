@@ -64,13 +64,13 @@ class IrregularTests(unittest.TestCase):
         self.assertEqual(result.shapes, [])
 
     def test_scan_and_vector_rejection(self):
-        import cv2
         import numpy as np
         with tempfile.TemporaryDirectory() as folder:
             image = np.full((200, 300), 255, dtype=np.uint8)
-            cv2.fillPoly(image, [np.array([[20, 20], [220, 20], [20, 120]])], 0)
+            for y in range(20, 120):
+                image[y, 20:220 - 2 * (y - 20)] = 0
             path = Path(folder) / 'scan.png'
-            cv2.imwrite(str(path), image)
+            fitz.Pixmap(fitz.csGRAY, 300, 200, image.tobytes(), False).save(path)
             shapes = read_scan(path)
             self.assertEqual(len(shapes), 1)
             self.assertAlmostEqual(shapes[0].bounds[2], 200)
@@ -82,6 +82,29 @@ class IrregularTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 read_vector_pdf(pdf)
             self.assertEqual(len(read_scan(pdf)), 1)
+
+    def test_scan_holes_and_diagonal_pixels(self):
+        import numpy as np
+        from irregular import trace_silhouettes
+        image = np.full((50, 50), 255, dtype=np.uint8)
+        image[5:25, 5:25] = 0
+        image[10:20, 10:20] = 255
+        image[25:35, 25:35] = 0
+        shapes = trace_silhouettes(image)
+        self.assertEqual(len(shapes), 2)
+        self.assertEqual([p.area for p in shapes], [400, 100])
+        self.assertTrue(all(p.is_valid for p in shapes))
+
+    def test_transparent_scan(self):
+        import numpy as np
+        with tempfile.TemporaryDirectory() as folder:
+            rgba = np.zeros((50, 50, 4), dtype=np.uint8)
+            rgba[10:30, 10:40, 3] = 255
+            path = Path(folder) / 'transparent.png'
+            fitz.Pixmap(fitz.csRGB, 50, 50, rgba.tobytes(), True).save(path)
+            shapes = read_scan(path)
+            self.assertEqual(len(shapes), 1)
+            self.assertEqual(shapes[0].bounds[2:], (30, 20))
 
     def test_curved_contour(self):
         with tempfile.TemporaryDirectory() as folder:

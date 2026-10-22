@@ -84,39 +84,90 @@ def read_vector_pdf(path):
     return sorted(result, key=lambda p: -p.area)
 
 
+def trace_silhouettes(image, threshold=180):
+    """Śledzenie krawędzi ciemnych pikseli bez OpenCV i dodatkowych DLL."""
+    import numpy as np
+    if not 1 <= threshold <= 254:
+        raise ValueError('Próg musi być z zakresu 1–254.')
+    dark = image <= threshold
+    padded = np.pad(dark, 1)
+    sides = [dark & ~padded[:-2, 1:-1], dark & ~padded[1:-1, 2:],
+             dark & ~padded[2:, 1:-1], dark & ~padded[1:-1, :-2]]
+    if sum(int(side.sum()) for side in sides) > 200000:
+        raise ValueError('Skan zawiera zbyt wiele krawędzi. Usuń szum lub wykadruj formatkę.')
+    edges = {}
+    for side, mask in enumerate(sides):
+        ys, xs = np.nonzero(mask)
+        for x, y in zip(xs.tolist(), ys.tolist()):
+            start, end = (((x, y), (x + 1, y)), ((x + 1, y), (x + 1, y + 1)),
+                          ((x + 1, y + 1), (x, y + 1)), ((x, y + 1), (x, y)))[side]
+            edges.setdefault(start, set()).add(end)
+    result = []
+    directions = {(1, 0): 0, (0, 1): 1, (-1, 0): 2, (0, -1): 3}
+    while edges:
+        start = next(iter(edges))
+        current = start
+        ring = [start]
+        previous_direction = None
+        while True:
+            choices = edges.get(current)
+            if not choices:
+                break
+            def priority(point):
+                direction = directions[(point[0] - current[0], point[1] - current[1])]
+                if previous_direction is None:
+                    return direction
+                turn = (direction - previous_direction) % 4
+                return {1: 0, 0: 1, 3: 2, 2: 3}[turn]
+            end = min(choices, key=priority)
+            choices.remove(end)
+            if not choices:
+                del edges[current]
+            previous_direction = directions[(end[0] - current[0], end[1] - current[1])]
+            ring.append(end)
+            current = end
+            if current == start:
+                break
+        if len(ring) < 4 or ring[-1] != start:
+            continue
+        # Współrzędna Y rośnie w dół: dodatnie pole to zewnętrzny obrys.
+        signed_area = sum(x * yy - xx * y for (x, y), (xx, yy) in zip(ring, ring[1:])) / 2
+        if signed_area < 25:
+            continue
+        poly = Polygon(ring)
+        if poly.is_valid:
+            result.append(normalize(poly.simplify(0.5, preserve_topology=True)))
+    return sorted(result, key=lambda p: -p.area)[:100]
+
+
 def read_scan(path, threshold=180):
-    """Zewnętrzne ciemne sylwetki na jasnym tle; skala wymaga kalibracji."""
-    import cv2
+    """PyMuPDF odczytuje PDF oraz obrazy; skala wymaga kalibracji."""
     import numpy as np
     if str(path).lower().endswith('.pdf'):
         with fitz.open(path) as doc:
             if not len(doc):
-                raise ValueError('PDF nie zawiera stron.')
+                raise ValueError('Plik nie zawiera stron.')
             page = doc[0]
-            factor = min(2, 4000 / max(page.rect.width, page.rect.height))
+            factor = min(2, 3000 / max(page.rect.width, page.rect.height))
             pix = page.get_pixmap(matrix=fitz.Matrix(factor, factor), colorspace=fitz.csGRAY, alpha=False)
-            image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
     else:
-        image = cv2.imdecode(np.fromfile(path, dtype=np.uint8), cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            raise ValueError('Nie można odczytać obrazu.')
-        if max(image.shape) > 4000:
-            image = cv2.resize(image, None, fx=4000 / max(image.shape), fy=4000 / max(image.shape))
-    _, binary = cv2.threshold(image, threshold, 255, cv2.THRESH_BINARY_INV)
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    result = []
-    for contour in contours:
-        if cv2.contourArea(contour) < 25:
-            continue
-        contour = cv2.approxPolyDP(contour, 0.5, True)
-        points = contour.reshape(-1, 2)
-        if len(points) >= 3:
-            poly = Polygon(points)
-            if poly.is_valid and poly.area > 0:
-                result.append(normalize(poly))
+        pix = fitz.Pixmap(str(path))
+        while max(pix.width, pix.height) > 3000:
+            pix.shrink(1)
+        if pix.alpha:
+            # Przezroczyste tło obrazu zastępujemy białym, nie czarnym.
+            rgba = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+            colors = rgba[:, :, :-1].astype(np.uint16)
+            alpha = rgba[:, :, -1:].astype(np.uint16)
+            colors = (colors + 255 - alpha).clip(0, 255).astype(np.uint8)
+            pix = fitz.Pixmap(pix.colorspace, pix.width, pix.height, colors.tobytes(), False)
+        if pix.colorspace != fitz.csGRAY:
+            pix = fitz.Pixmap(fitz.csGRAY, pix)
+    image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width)
+    result = trace_silhouettes(image, threshold)
     if not result:
         raise ValueError('Nie znaleziono obrysu. Użyj ciemnej sylwetki lub wyraźnego zamkniętego obrysu na białym tle.')
-    return sorted(result, key=lambda p: -p.area)[:100]
+    return result
 
 
 @dataclass

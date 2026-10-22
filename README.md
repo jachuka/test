@@ -12,7 +12,7 @@ py -3 -m venv .venv-build
 .venv-build\Scripts\python.exe app.py
 ```
 
-Zależności: PyMuPDF (odczyt i zapis PDF), Shapely (geometria), OpenCV (odczyt skanów). Instalacja wymaga internetu; obliczenia i import/eksport działają lokalnie.
+Zależności: PyMuPDF (odczyt i zapis PDF), Shapely (geometria), NumPy (analiza pikseli skanów, bez OpenCV). Instalacja wymaga internetu; obliczenia i import/eksport działają lokalnie.
 
 ## Plik EXE dla Windows 11
 
