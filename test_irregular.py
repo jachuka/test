@@ -56,6 +56,27 @@ class IrregularTests(unittest.TestCase):
         self.assertEqual(len(nest(box(0, 0, 60, 30), 35, 65, 0, 1).shapes), 1)
         self.assertEqual(len(nest(box(0, 0, 10, 10), 10, 10, 0, 6).shapes), 0)
 
+    def test_full_sheet_is_preserved_when_time_expires(self):
+        poly = Polygon([(0, 0), (246, 0), (246, 115), (166, 115), (166, 40), (0, 40)])
+        result = nest(poly, 3050, 2050, 5, 10, seconds=0)
+        self.assertEqual(len(result.shapes), 200)
+        self.assertTrue(result.limited)
+        self.assertGreater(max(p.bounds[3] for p in result.shapes), 1900)
+
+    def test_repeating_groups_improve_count_and_preserve_clearance(self):
+        poly = Polygon([(0, 0), (246, 0), (246, 115), (166, 115), (166, 40), (0, 40)])
+        result = nest(poly, 3050, 2050, 5, 10, seconds=3)
+        self.assertGreater(len(result.shapes), 200)
+        usable = box(10, 10, 3040, 2040)
+        from shapely.strtree import STRtree
+        tree = STRtree(result.shapes)
+        for i, shape in enumerate(result.shapes):
+            self.assertTrue(usable.covers(shape))
+            for j in tree.query(shape.buffer(5.2)):
+                if j > i:
+                    self.assertGreaterEqual(shape.distance(result.shapes[j]), 5 - 1e-6)
+                    self.assertLess(shape.intersection(result.shapes[j]).area, 1e-6)
+
     def test_cancel(self):
         cancel = threading.Event()
         cancel.set()

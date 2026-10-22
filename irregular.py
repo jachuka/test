@@ -180,7 +180,7 @@ class NestResult:
     limited: bool = False
 
 
-def nest(poly, width, height, gap, margin, rotate=True, seconds=15, cancel=None, limit=1000):
+def _greedy_nest(poly, width, height, gap, margin, rotate=True, seconds=15, cancel=None, limit=1000):
     if not all(isfinite(v) for v in (width, height, gap, margin)) or min(width, height) <= 0 or min(gap, margin) < 0:
         raise ValueError('Podaj dodatnie wymiary oraz nieujemny odstęp i margines.')
     if not poly.is_valid or poly.is_empty or poly.area <= 0:
@@ -236,6 +236,91 @@ def nest(poly, width, height, gap, margin, rotate=True, seconds=15, cancel=None,
         result.shapes.append(best[1])
         obstacles.append(best[1].buffer(clearance, join_style='mitre'))
     result.limited = len(result.shapes) >= limit
+    return result
+
+
+def nest(poly, width, height, gap, margin, rotate=True, seconds=15, cancel=None, limit=1000):
+    """Najpierw pełny układ bazowy, potem powtarzalne grupy dopasowanych obrysów."""
+    from packing import calculate
+    if not all(isfinite(v) for v in (width, height, gap, margin, seconds)) or min(width, height) <= 0 or min(gap, margin, seconds) < 0:
+        raise ValueError('Podaj dodatnie wymiary oraz nieujemny odstęp, margines i czas.')
+    if not poly.is_valid or poly.is_empty or poly.area <= 0:
+        raise ValueError('Nieprawidłowy obrys.')
+    result = NestResult([], width, height, gap, margin)
+    if cancel and cancel.is_set():
+        result.limited = True
+        return result
+    if min(width, height) <= 2 * margin:
+        return result
+    poly = normalize(poly)
+    clearance = gap + 2 * TOLERANCE
+    end = monotonic() + seconds
+
+    def repeat_group(group):
+        from shapely.ops import unary_union
+        bounds = unary_union(group).bounds
+        gw, gh = bounds[2] - bounds[0], bounds[3] - bounds[1]
+        # Kalkulator prostokątów nie tworzy tu ogromnej listy pojedynczych formatek.
+        try:
+            layout = calculate(width, height, gw, gh, clearance, margin, rotate)
+        except ValueError:
+            # Bardzo drobne elementy: wystarczy pierwsze limit pozycji regularnej siatki.
+            from math import floor
+            from itertools import islice
+            cols = max(0, floor((width - 2 * margin + clearance) / (gw + clearance)))
+            rows = max(0, floor((height - 2 * margin + clearance) / (gh + clearance)))
+            rectangles = list(islice(((margin + col * (gw + clearance), margin + row * (gh + clearance), gw, gh)
+                          for row in range(min(rows, limit)) for col in range(min(cols, limit))), limit))
+        else:
+            rectangles = layout.rectangles
+        count = min(limit, len(rectangles) * len(group))
+        if count <= len(result.shapes):
+            return
+        straight = [affinity.translate(p, -bounds[0], -bounds[1]) for p in group]
+        turned = [affinity.rotate(p, 90, origin=(0, 0)) for p in straight]
+        turned = [affinity.translate(p, gh, 0) for p in turned]
+        shapes = []
+        for x, y, rw, rh in rectangles:
+            oriented = straight if abs(rw - gw) < 1e-6 and abs(rh - gh) < 1e-6 else turned
+            for p in oriented:
+                shapes.append(affinity.translate(p, x, y))
+                if len(shapes) >= limit:
+                    break
+            if len(shapes) >= limit:
+                break
+        result.shapes = shapes
+
+    # Pełny wynik powstaje przed kosztowną optymalizacją.
+    repeat_group([poly])
+    if len(result.shapes) >= limit:
+        result.limited = True
+        return result
+    pw, ph = poly.bounds[2:]
+    # Niewielkie grupy znajdują dopasowanie wcięć bez ponawiania kosztownego
+    # wyszukiwania osobno dla każdej kopii na całym arkuszu.
+    sizes = [(2 * pw + clearance, ph), (pw, 2 * ph + clearance),
+             (pw + ph + clearance, max(pw, ph)),
+             (2 * pw + clearance, 2 * ph + clearance),
+             (3 * pw + 2 * clearance, 2 * ph + clearance),
+             (2 * pw + clearance, 3 * ph + 2 * clearance)]
+    for index, (tw, th) in enumerate(sizes):
+        remaining = end - monotonic()
+        if remaining <= 0 or (cancel and cancel.is_set()):
+            result.limited = True
+            return result
+        tw, th = min(tw, width - 2 * margin), min(th, height - 2 * margin)
+        local = _greedy_nest(poly, tw, th, gap, 0, rotate,
+                             seconds=remaining / (len(sizes) - index), cancel=cancel, limit=12)
+        # Każdy prefiks może stanowić bardziej wydajny moduł niż cała grupa.
+        for count in range(2, len(local.shapes) + 1):
+            if cancel and cancel.is_set():
+                result.limited = True
+                return result
+            repeat_group(local.shapes[:count])
+        if local.limited:
+            result.limited = True
+    if len(result.shapes) >= limit:
+        result.limited = True
     return result
 
 

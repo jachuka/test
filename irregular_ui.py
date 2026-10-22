@@ -41,7 +41,11 @@ class IrregularTab(ttk.Frame):
             self.fields.append(entry)
         self.rotate = tk.BooleanVar(value=True)
         ttk.Checkbutton(panel, text='Obroty 0°, 90°, 180°, 270°', variable=self.rotate).pack(anchor='w', pady=7)
-        ttk.Label(panel, text='Jeden wybrany obrys, maksymalnie 1000 kopii.\nSzukanie trwa do 15 sekund.', wraplength=300).pack(anchor='w')
+        ttk.Label(panel, text='Czas optymalizacji [sekundy]:').pack(anchor='w')
+        self.duration = ttk.Combobox(panel, state='readonly', values=('15', '30', '60', '120'))
+        self.duration.set('30')
+        self.duration.pack(fill='x')
+        ttk.Label(panel, text='Jeden obrys, do 1000 kopii. Najpierw pełna siatka, potem dopasowane grupy.', wraplength=300).pack(anchor='w')
         self.run = ttk.Button(panel, text='Ułóż formatki', command=self.compute)
         self.run.pack(fill='x', pady=5)
         self.stop = ttk.Button(panel, text='Przerwij szukanie', command=self.cancel.set, state='disabled')
@@ -132,11 +136,12 @@ class IrregularTab(ttk.Frame):
             button.config(state='disabled')
         self.selector.config(state='disabled')
         self.stop.config(state='normal')
-        self.status.config(text='Szukanie układu… do 15 sekund. Możesz przerwać.')
+        seconds = int(self.duration.get())
+        self.status.config(text=f'Szukanie układu… do {seconds} sekund. Możesz przerwać; zachowam najlepszy układ.')
         shape, rotate = self.shape, self.rotate.get()
         def worker():
             try:
-                self.messages.put(('ok', nest(shape, *values, rotate=rotate, cancel=self.cancel)))
+                self.messages.put(('ok', nest(shape, *values, rotate=rotate, seconds=seconds, cancel=self.cancel)))
             except Exception as exc:
                 self.messages.put(('error', str(exc)))
         threading.Thread(target=worker, daemon=True).start()
@@ -160,7 +165,7 @@ class IrregularTab(ttk.Frame):
                 self.result = value
                 count = len(value.shapes)
                 area = sum(p.area for p in value.shapes)
-                self.status.config(text=f'Znaleziono: {count} formatek\nWykorzystanie: {area / (value.width * value.height):.1%}\nArkusz wyniku: {value.width:g} × {value.height:g} mm\nOdstęp: {value.gap:g}, margines: {value.margin:g} mm\n' + ('Osiągnięto limit / przerwano — wynik częściowy.' if value.limited else 'Zakończono szukanie heurystyczne.'))
+                self.status.config(text=f'Znaleziono: {count} formatek\nWykorzystanie: {area / (value.width * value.height):.1%}\nArkusz wyniku: {value.width:g} × {value.height:g} mm\nOdstęp: {value.gap:g}, margines: {value.margin:g} mm\n' + ('Limit optymalizacji / przerwano. Zachowano najlepszy układ.' if value.limited else 'Zakończono szukanie heurystyczne.'))
                 self.save.config(state='normal' if count else 'disabled')
                 self.draw()
         self.after(100, self.poll)
