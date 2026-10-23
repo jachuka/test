@@ -14,10 +14,12 @@ from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, 
 
 
 class DimensionQuestion(simpledialog.Dialog):
-    def __init__(self,parent,title,prompt,png=None,initial=None):
+    def __init__(self,parent,title,prompt,png=None,initial=None,caption=None,skip_ocr=False):
         self.prompt=prompt
         self.png=png
         self.initial=initial
+        self.caption=caption or 'Niebieski odcinek: pytany wymiar. Linie przerywane łączą go z punktami konturu.'
+        self.skip_ocr=skip_ocr
         self.owner=parent.winfo_toplevel()
         super().__init__(self.owner,title)
 
@@ -27,7 +29,7 @@ class DimensionQuestion(simpledialog.Dialog):
         if self.png:
             self.preview=ZoomPreview(master,self.png)
             self.preview.pack(fill='both',expand=True,pady=8)
-            ttk.Label(master,text='Niebieska linia wskazuje pytany wymiar.',wraplength=450).pack(anchor='w')
+            ttk.Label(master,text=self.caption,wraplength=450).pack(anchor='w')
         ttk.Label(master,text='Wartość w milimetrach:').pack(anchor='w',pady=(8,2))
         self.entry=ttk.Entry(master)
         if self.initial is not None:
@@ -38,6 +40,15 @@ class DimensionQuestion(simpledialog.Dialog):
     def wait_visibility(self,window=None):
         super().wait_visibility(window)
         self._bring_to_front()
+
+    def buttonbox(self):
+        super().buttonbox()
+        if self.skip_ocr:
+            ttk.Button(self,text='To nie ten wymiar — pomiń odczyt',command=self.skip_reading).pack(fill='x',padx=10,pady=(0,8))
+
+    def skip_reading(self):
+        self.result='skip_ocr'
+        self.cancel()
 
     def _bring_to_front(self):
         if self.winfo_exists():
@@ -595,7 +606,11 @@ class SketchTab(ttk.Frame):
             else:
                 text='Nie znaleziono jednoznacznej linii wymiarowej dla tej odległości. Podaj wymiar wskazany niebieską strzałką, jeśli znasz go ze szkicu, lub anuluj.'
             text+='\nAnuluj zachowa dotychczasową pracę.'
+            axis_name='pionowy (Y)' if question['axis']=='y' else 'poziomy (X)'
+            text+=f"\nWymiar {axis_name} między punktami P{question['start']+1} i P{question['end']+1}."
             preview_question=dict(question)
+            a,b=self.points[question['start']],self.points[question['end']]
+            preview_question['witness_points']=[(*a,f"P{question['start']+1}"),(*b,f"P{question['end']+1}")]
             if not preview_question.get('image_line'):
                 a,b=self.points[question['start']],self.points[question['end']]
                 preview_question['context_bounds']=(min(a[0],b[0]),min(a[1],b[1]),max(a[0],b[0]),max(a[1],b[1]))
@@ -605,8 +620,14 @@ class SketchTab(ttk.Frame):
                     preview_question['image_line']=((a[0]+b[0])/2,a[1],(a[0]+b[0])/2,b[1])
             source=self.source_png or (self.detection.png if self.detection is not None else None)
             png=question_crop(source,preview_question,include_line=True) if source else None
-            value=DimensionQuestion(self,title,text,png=png,initial=suggestion).result
+            caption='Niebieski odcinek: pytany wymiar. Linie przerywane łączą go z punktami konturu.'
+            if question.get('label_bounds'):
+                caption='Pomarańczowa ramka: napis OCR. '+caption
+            value=DimensionQuestion(self,title,text,png=png,initial=suggestion,caption=caption,
+                                    skip_ocr=question.get('source') in ('uncertain_ocr','unread_label')).result
             self.question_relation=None;self.draw_source()
+            if value=='skip_ocr':
+                continue
             if value is None:
                 if 'candidates' in question:
                     self.auto_questions.insert(0,question)
@@ -982,6 +1003,9 @@ class SketchTab(ttk.Frame):
                     line=((a[0]+b[0])/2,a[1],(a[0]+b[0])/2,b[1])
             if item.get('label_bounds'):
                 c.create_rectangle(*coordinates(item['label_bounds']),outline='#f09000',width=3)
+            for vertex,endpoint in zip((xy[item['start']],xy[item['end']]),(line[:2],line[2:])):
+                c.create_line(*vertex,*endpoint,fill='#005de0',width=1,dash=(4,3),tags=('dimension-witness',))
+                c.create_oval(vertex[0]-4,vertex[1]-4,vertex[0]+4,vertex[1]+4,outline='#005de0',width=2)
             c.create_line(*line,fill='#005de0',width=3,arrow='both',tags=('question-line',))
         for i,(x,y) in enumerate(xy):
             c.create_oval(x-3,y-3,x+3,y+3,fill='#ce302d',outline='white')

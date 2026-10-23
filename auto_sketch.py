@@ -297,6 +297,7 @@ class OCRWord:
     value: float
     confidence: float
     bounds: tuple
+    axis: str | None = None
 
 
 def inspect_tesseract(executable):
@@ -408,7 +409,7 @@ def ocr_numbers(mask, executable, diagnostics=None):
                     return py,h-px
                 corners=[original(*p) for p in corners]
                 bounds=(min(p[0] for p in corners),min(p[1] for p in corners),max(p[0] for p in corners),max(p[1] for p in corners))
-                words.append(OCRWord(value,confidence,bounds))
+                words.append(OCRWord(value,confidence,bounds,'x' if rotation%2==0 else 'y'))
     if diagnostics is not None:
         diagnostics['words']=len(words)
         diagnostics['numbers']=[(word.value,word.confidence) for word in words]
@@ -504,6 +505,15 @@ def question_crop(png,question,include_line=False):
     bounds=coordinates(question.get('label_bounds'))
     line=coordinates(question.get('image_line'))
     context=coordinates(question.get('context_bounds'))
+    witnesses=[]
+    for value in question.get('witness_points',()):
+        try:
+            x,y,label=value
+            x,y=float(x),float(y)
+        except (TypeError,ValueError):
+            continue
+        if np.isfinite(x) and np.isfinite(y) and re.fullmatch(r'P\d+',str(label)):
+            witnesses.append((x,y,str(label)))
     if bounds:
         ax,ay,bx,by=bounds
         bounds=(min(ax,bx),min(ay,by),max(ax,bx),max(ay,by))
@@ -514,6 +524,8 @@ def question_crop(png,question,include_line=False):
             xs.extend((bounds[0],bounds[2]));ys.extend((bounds[1],bounds[3]))
         if context:
             xs.extend((context[0],context[2]));ys.extend((context[1],context[3]))
+        for x,y,_ in witnesses:
+            xs.append(x);ys.append(y)
         left,right=min(xs)-30,max(xs)+30
         top,bottom=min(ys)-30,max(ys)+30
     elif bounds:
@@ -541,6 +553,10 @@ def question_crop(png,question,include_line=False):
         page.insert_image(page.rect,stream=cropped)
         if line:
             ax,ay,bx,by=line
+            for (px,py,label),(ex,ey) in zip(witnesses,((ax,ay),(bx,by))):
+                page.draw_line((px-x0,py-y0),(ex-x0,ey-y0),color=(0,.35,1),width=1.5,dashes='[3 3]')
+                page.draw_circle((px-x0,py-y0),3,color=(0,.35,1),width=1.5)
+                page.insert_text((px-x0+5,py-y0-5),label,fontsize=9,color=(0,.35,1))
             page.draw_line((ax-x0,ay-y0),(bx-x0,by-y0),color=(0,.35,1),width=2)
         if bounds:
             ax,ay,bx,by=bounds
@@ -550,17 +566,20 @@ def question_crop(png,question,include_line=False):
 
 def match_dimensions(points,mask,words):
     """Wiąż cyfry tylko z linią o końcach odpowiadających poziomom narożników."""
-    lines=straight_lines(mask)
+    from dimension_lines import dimension_spans
+    lines=dimension_spans(mask,points,straight_lines(mask))
     proposals=defaultdict(list)
     for word in words:
         bx0,by0,bx1,by1=word.bounds
         cx,cy=(bx0+bx1)/2,(by0+by1)/2
         candidates=[]
         for axis,pos,start,end in lines:
+            if word.axis is not None and axis!=word.axis:
+                continue
             along,across=(cx,cy) if axis=='x' else (cy,cx)
             size=(by1-by0) if axis=='x' else (bx1-bx0)
             span=end-start
-            if abs(across-pos)>max(35,2*size) or abs(along-(start+end)/2)>max(15,span*.12):
+            if abs(across-pos)>min(50,max(35,2*size)) or abs(along-(start+end)/2)>max(15,span*.12):
                 continue
             index=0 if axis=='x' else 1
             ends=[]

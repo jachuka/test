@@ -114,6 +114,27 @@ class AutoSketchTests(unittest.TestCase):
         self.assertEqual(accepted[0],dict(start=3,end=2,axis='x',value=300))
         self.assertEqual(questions,[])
 
+    def test_horizontal_ocr_blob_cannot_label_vertical_line(self):
+        points=[(100,50),(400,50),(400,350),(100,350)]
+        mask=np.zeros((420,520),dtype=bool);mask[50:351,430]=True
+        blob=OCRWord(4,99,(410,180,490,210),axis='x')
+        accepted,questions=match_dimensions(points,mask,[blob])
+        self.assertEqual(accepted,[])
+        self.assertEqual(questions,[])
+        # Ta sama linia może mieć prawidłowy odczyt z obrotu OCR.
+        word=OCRWord(300,55,(440,180,452,220),axis='y')
+        _,questions=match_dimensions(points,mask,[word])
+        self.assertEqual(len(questions),1)
+        self.assertEqual(questions[0]['image_line'],(430.,50.,430.,350.))
+
+    def test_chained_dimension_label_matches_only_middle_section(self):
+        points=[(100,50),(400,50),(400,150),(300,150),(300,250),(400,250),(400,350),(100,350)]
+        mask=np.zeros((420,520),dtype=bool);mask[50:351,430]=True
+        for y in (50,150,250,350):
+            mask[y,300:451]=True
+        accepted,_=match_dimensions(points,mask,[OCRWord(30,96,(440,188,452,212),axis='y')])
+        self.assertEqual(accepted,[dict(start=2,end=5,axis='y',value=30)])
+
     def test_uncertain_or_conflicting_digits_become_questions(self):
         points=[(100,100),(400,100),(400,300),(100,300)]
         mask=np.zeros((420,500),dtype=bool);mask[330,100:401]=True
@@ -145,6 +166,7 @@ class AutoSketchTests(unittest.TestCase):
                 words=ocr_numbers(np.zeros((100,120),dtype=bool),executable)
                 self.assertEqual(len(words),4)
                 self.assertTrue(all(word.value==160 for word in words))
+                self.assertEqual([word.axis for word in words],['x','y','x','y'])
                 self.assertEqual(run.call_count,4)
                 for call in run.call_args_list:
                     self.assertIsInstance(call.args[0],list)
@@ -298,6 +320,23 @@ class AutoSketchTests(unittest.TestCase):
         # context_bounds nie jest napisem OCR i nie tworzy pomarańczowej ramki.
         orange=(pixels[:,:,0]>220)&(pixels[:,:,1]>70)&(pixels[:,:,1]<190)&(pixels[:,:,2]<60)
         self.assertFalse(orange.any())
+        self.assertEqual(question,original)
+
+    def test_dimension_crop_connects_external_line_to_named_vertices(self):
+        from auto_sketch import question_crop
+        from copy import deepcopy
+        png=drawing([(50,50),(300,50),(300,350),(50,350)])
+        question=dict(image_line=(430,50,430,350),witness_points=[(300,50,'P2'),(300,350,'P3')])
+        original=deepcopy(question)
+        pix=fitz.Pixmap(question_crop(png,question,include_line=True))
+        self.assertEqual((pix.width,pix.height),(191,361))
+        pixels=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width,pix.n)
+        # Źródło(300,50) w wycinku(270,20): niebieski okrąg przy wierzchołku
+        # i przerywane połączenie aż do pionowej linii wymiarowej.
+        blue=(pixels[:,:,0]<80)&(pixels[:,:,1]<170)&(pixels[:,:,2]>200)
+        self.assertTrue(blue[25:36,25:36].any())
+        self.assertTrue(blue[29:32,50:140].any())
+        self.assertGreater(blue[40:300,159:162].sum(),100)
         self.assertEqual(question,original)
 
 
