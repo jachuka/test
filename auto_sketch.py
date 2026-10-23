@@ -23,6 +23,11 @@ class Detection:
     contours: list
     mask: object
     png: bytes
+    region: tuple | None = None
+    gap: int = 1
+    raw_contours: list | None = None
+    warnings: tuple = ()
+    curve_candidates: list | None = None
 
 
 def monochrome(png,threshold=205):
@@ -36,12 +41,18 @@ def monochrome(png,threshold=205):
     return (rgb.max(axis=2) < threshold) & (np.ptp(rgb, axis=2) < 75)
 
 
-def close_gaps(mask):
+def close_gaps(mask,gap=1):
+    """Domknij drobne przerwy w tuszu; gap jest promieniem w pikselach, nie mm."""
+    if type(gap) is not int or not 0<=gap<=3:
+        raise ValueError('Naprawa przerw musi być całkowitą liczbą 0–3 piksele.')
+    if gap==0:
+        return mask.copy()
     h,w=mask.shape
-    padded=np.pad(mask,1)
-    dilated=np.logical_or.reduce([padded[y:y+h,x:x+w] for y in range(3) for x in range(3)])
-    padded=np.pad(dilated,1,constant_values=True)
-    return np.logical_and.reduce([padded[y:y+h,x:x+w] for y in range(3) for x in range(3)])
+    padded=np.pad(mask,gap)
+    size=2*gap+1
+    dilated=np.logical_or.reduce([padded[y:y+h,x:x+w] for y in range(size) for x in range(size)])
+    padded=np.pad(dilated,gap,constant_values=True)
+    return np.logical_and.reduce([padded[y:y+h,x:x+w] for y in range(size) for x in range(size)])
 
 
 def enclosed_regions(dark):
@@ -93,7 +104,7 @@ def enclosed_regions(dark):
     return result
 
 
-def contour_candidates(regions):
+def contour_candidates(regions,detail=False):
     # Linia wymiarowa może rozdzielić wnętrze formatki. Scal sąsiednie pola
     # oddzielone tylko cienką kreską; wynik zawsze wymaga obejrzenia.
     parent=list(range(len(regions)))
@@ -118,11 +129,11 @@ def contour_candidates(regions):
         for p in polys:
             if p.geom_type!='Polygon':
                 continue
-            p=p.simplify(4,preserve_topology=True)
+            p=p.simplify(1 if detail else 4,preserve_topology=True)
             # Wyprostowanie odręcznych prawie poziomych i pionowych boków.
             # Są to relacje topologiczne, nie rzeczywiste wymiary w mm.
             points=list(p.exterior.coords)[:-1]
-            for axis in (0,1):
+            for axis in (() if detail else (0,1)):
                 coordinates=sorted(set(point[axis] for point in points))
                 clusters=[]
                 for value in coordinates:
@@ -170,10 +181,30 @@ def orthogonal_ink(mask):
     return result
 
 
-def detect_contours(png,threshold=205):
+def detect_contours(png,threshold=205,*,region=None,gap=1):
+    """Wykrywanie topologii; region ogranicza tylko obrys, pełny obraz pozostaje dla OCR.
+
+    Współrzędne wyniku zawsze odnoszą się do oryginalnego podglądu PNG.
+    Domykanie przerw działa wyłącznie na pikselach, nie ustala wymiarów.
+    """
     mask=monochrome(png,threshold)
-    primary=contour_candidates(enclosed_regions(close_gaps(mask)))
-    orthogonal=contour_candidates(enclosed_regions(close_gaps(orthogonal_ink(mask))))
+    geometry=mask
+    offset=(0,0)
+    if region is not None:
+        if len(region)!=4 or any(not np.isfinite(v) for v in region):
+            raise ValueError('Nieprawidłowy obszar wykrywania obrysu.')
+        x0,y0,x1,y1=(round(v) for v in region)
+        if not (0<=x0<x1<=mask.shape[1] and 0<=y0<y1<=mask.shape[0]):
+            raise ValueError('Obszar wykrywania musi mieścić się w szkicu.')
+        if x1-x0<20 or y1-y0<20:
+            raise ValueError('Zaznacz większy obszar wykrywania obrysu.')
+        region=(x0,y0,x1,y1)
+        geometry=mask[y0:y1,x0:x1]
+        offset=(x0,y0)
+    primary_regions=enclosed_regions(close_gaps(geometry,gap))
+    orthogonal_regions=enclosed_regions(close_gaps(orthogonal_ink(geometry),gap))
+    primary=contour_candidates(primary_regions)
+    orthogonal=contour_candidates(orthogonal_regions)
     if not primary and not orthogonal:
         raise ValueError('Nie wykryto zamkniętego obrysu. Zwiększ próg jasności, popraw przerwy albo użyj korekty ręcznej.')
     def axis_ratio(points):
@@ -201,7 +232,28 @@ def detect_contours(png,threshold=205):
         if any(poly.hausdorff_distance(Polygon(old))<7 for old in contours):
             continue
         contours.append(points)
-    return Detection(contours,mask,png)
+    raw_candidates=contour_candidates(orthogonal_regions if prefer_orthogonal else primary_regions,detail=True)
+    raw_contours=[]
+    for points in contours:
+        polygon=Polygon(points)
+        raw=min(raw_candidates,key=lambda candidate:polygon.hausdorff_distance(Polygon(candidate)),default=points)
+        # Zapasowy wariant może pochodzić z drugiej metody wykrywania.
+        if polygon.hausdorff_distance(Polygon(raw))>12:
+            raw=points
+        raw_contours.append(raw)
+    if region is not None:
+        contours=[[(x+offset[0],y+offset[1]) for x,y in points] for points in contours]
+        raw_contours=[[(x+offset[0],y+offset[1]) for x,y in points] for points in raw_contours]
+    warnings=[]
+    if region is None and len(contours)>1:
+        first=Polygon(contours[0])
+        if any(first.intersection(Polygon(other)).area/min(first.area,Polygon(other).area)<.2
+               and Polygon(other).area>first.area*.25 for other in contours[1:]):
+            warnings.append('Wykryto kilka oddzielnych pól. Część może być zamknięta liniami wymiarowymi. '
+                            'Sprawdź cały obrys; w razie potrzeby zaznacz obszar samej formatki.')
+    if gap>1:
+        warnings.append('Zastosowano mocniejsze domykanie przerw. Sprawdź małe zaczepy, fazowania i zaokrąglenia.')
+    return Detection(contours,mask,png,region,gap,raw_contours,tuple(warnings))
 
 
 def topology(points):

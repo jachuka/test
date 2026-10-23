@@ -47,6 +47,52 @@ class AutoSketchTests(unittest.TestCase):
         from shapely.geometry import Polygon
         self.assertLess(Polygon(points).hausdorff_distance(Polygon(result.contours[0])),5)
 
+    def test_region_and_gap_repair_keep_ocr_and_source_coordinates(self):
+        from shapely.geometry import Polygon
+        points=[(100,100),(350,100),(350,600),(100,600),(100,500),(250,500),(250,200),(100,200)]
+        with fitz.open() as doc:
+            page=doc.new_page(width=500,height=700)
+            page.draw_polyline(points+[points[0]],width=2)
+            # Zewnętrzna linia wymiarowa tworzy zamknięte pole obok formatki.
+            page.draw_polyline([(350,100),(400,100),(400,600),(350,600)],width=1)
+            # Przerwa większa niż domyślne domykanie tuszu.
+            page.draw_rect((190,98,194,102),color=(1,1,1),fill=(1,1,1))
+            png=page.get_pixmap(alpha=False).tobytes('png')
+        region=(80,80,370,620)
+        with self.assertRaises(ValueError):
+            detect_contours(png,region=region,gap=1)
+        result=detect_contours(png,region=region,gap=2)
+        self.assertEqual(len(result.contours[0]),8)
+        self.assertLess(Polygon(points).hausdorff_distance(Polygon(result.contours[0])),3)
+        self.assertEqual(result.mask.shape,(700,500))
+        self.assertTrue(result.mask[200,399:402].any())
+        self.assertEqual(result.png,png)
+        self.assertEqual(result.region,region)
+        self.assertEqual(len(result.raw_contours),len(result.contours))
+        self.assertLess(Polygon(result.raw_contours[0]).hausdorff_distance(Polygon(result.contours[0])),5)
+        self.assertIn('domykanie przerw',' '.join(result.warnings))
+        # Kontur nadal wymaga wymiarów, nie jest przeskalowany z pikseli.
+        with self.assertRaisesRegex(ValueError,'Brakuje wymiarów'):
+            build_contour(*topology(result.contours[0]))
+
+    def test_invalid_detection_region_and_gap_are_rejected(self):
+        png=drawing([(50,50),(400,50),(400,300),(50,300)])
+        for region in ((10,10,5,20),(-1,0,400,300),(0,0,999,999),(0,0,10,10),(0,0,float('nan'),100)):
+            with self.subTest(region=region),self.assertRaises(ValueError):
+                detect_contours(png,region=region)
+        for gap in (-1,4,1.5):
+            with self.subTest(gap=gap),self.assertRaises(ValueError):
+                detect_contours(png,gap=gap)
+
+    def test_disjoint_dimension_like_regions_raise_review_warning(self):
+        with fitz.open() as doc:
+            page=doc.new_page(width=500,height=420)
+            page.draw_rect((40,40,200,300),width=2)
+            page.draw_rect((240,40,400,300),width=1)
+            result=detect_contours(page.get_pixmap(alpha=False).tobytes('png'))
+        self.assertEqual(len(result.contours),2)
+        self.assertIn('liniami wymiarowymi',' '.join(result.warnings))
+
     def test_arbitrary_slanted_outline(self):
         result=detect_contours(drawing([(50,50),(400,50),(450,200),(250,350),(50,220)]))
         self.assertEqual(len(result.contours[0]),5)

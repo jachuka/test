@@ -1,6 +1,6 @@
 """Kontur wielokąta z wymiarów; współrzędne kliknięć nie są wymiarami."""
-from dataclasses import dataclass
-from math import isfinite
+from dataclasses import dataclass, field
+from math import isfinite, hypot, sqrt, atan2, pi, asin, cos, sin, ceil, radians
 from collections import deque
 from shapely.geometry import Polygon
 from shapely import affinity
@@ -11,6 +11,7 @@ class DimensionedShape:
     polygon: object
     dimensions: dict
     vertices: list
+    segments: list = field(default_factory=list)
 
 
 def number(value, label):
@@ -23,6 +24,68 @@ def number(value, label):
     if not isfinite(result):
         raise ValueError(f'{label}: wpisz skończoną liczbę.')
     return result
+
+
+def arc_geometry(start, end, arc, tolerance=0.05):
+    """Łuk z jawnego promienia mm i kąta sweep +/-90|180 (Y rośnie w dół).
+
+    Dodatni sweep jest zgodny z ruchem wskazówek zegara. Alternatywnie
+    clockwise: bool wraz z opcjonalnym dodatnim sweep określa kierunek.
+    Końce są punktami styczności. Piksele nie określają rozmiaru łuku.
+    """
+    if not isinstance(arc, dict):
+        raise ValueError('Nieprawidłowe dane łuku.')
+    radius=number(arc.get('radius'),'Promień łuku')
+    if radius is None:
+        raise ValueError('Uzupełnij promień łuku w mm.')
+    if radius<=0:
+        raise ValueError('Promień łuku musi być dodatni.')
+    declared=number(arc.get('sweep'),'Kąt łuku')
+    clockwise=arc.get('clockwise')
+    if clockwise is None:
+        if declared is None or abs(declared) not in (90,180):
+            raise ValueError('Potwierdź kierunek i kąt łuku: +/-90° lub +/-180°.')
+        clockwise=declared>0
+    elif type(clockwise) is not bool:
+        raise ValueError('Potwierdź kierunek łuku (clockwise).')
+    elif declared is not None and declared<0 and clockwise:
+        raise ValueError('Sprzeczny kierunek i kąt łuku.')
+    if not isfinite(tolerance) or tolerance<=0:
+        raise ValueError('Tolerancja łuku musi być dodatnia i skończona.')
+    x,y=start;xx,yy=end
+    chord=hypot(xx-x,yy-y)
+    if not isfinite(chord) or chord<=0:
+        raise ValueError('Łuk musi mieć różne, skończone punkty końcowe.')
+    epsilon=max(1e-9,radius*1e-9)
+    if chord>2*radius+epsilon:
+        raise ValueError('Promień łuku jest za mały dla odległości między jego końcami.')
+    ratio=min(1.0,chord/(2*radius))
+    angle=2*asin(ratio)
+    if declared is not None:
+        if abs(declared) not in (90,180):
+            raise ValueError('Obsługiwany kąt łuku to +/-90° albo +/-180°.')
+        expected=2*radius*sin(radians(abs(declared))/2)
+        if abs(chord-expected)>epsilon:
+            raise ValueError('Promień i kąt łuku nie zgadzają się z jego punktami końcowymi.')
+    sign=1 if clockwise else -1
+    height=radius*sqrt(max(0.0,1-ratio*ratio))
+    center=((x+xx)/2-sign*(yy-y)/chord*height,(y+yy)/2+sign*(xx-x)/chord*height)
+    theta=atan2(y-center[1],x-center[0])
+    max_step=min(pi/2,4*asin(sqrt(min(1.0,tolerance/radius/2))))
+    if max_step==0 or angle/max_step>100000:
+        raise ValueError('Łuk jest zbyt duży dla wymaganej tolerancji 0,05 mm.')
+    steps=max(1,ceil(angle/max_step))
+    fractions={i/steps for i in range(steps+1)}
+    for cardinal in (0,pi/2,pi,3*pi/2):
+        delta=((cardinal-theta)*sign)%(2*pi)
+        if 0<delta<angle:
+            fractions.add(delta/angle)
+    points=[(center[0]+radius*cos(theta+sign*angle*t),center[1]+radius*sin(theta+sign*angle*t)) for t in sorted(fractions)]
+    points[0],points[-1]=start,end
+    midpoint=(center[0]+radius*cos(theta+sign*angle/2),center[1]+radius*sin(theta+sign*angle/2))
+    return dict(kind='arc',start=start,end=end,radius=radius,clockwise=clockwise,
+                sweep=sign*angle*180/pi,center=center,midpoint=midpoint,
+                length=radius*angle,points=points,path=points)
 
 
 def build_contour(edges, dimensions=()):
@@ -74,12 +137,31 @@ def build_contour(edges, dimensions=()):
     vertices = [(coords['x'][i], coords['y'][i]) for i in range(n)]
     if len(set(vertices)) != n:
         raise ValueError('Co najmniej dwa narożniki mają te same współrzędne. Popraw wymiary.')
-    poly = Polygon(vertices)
+    outline=[]
+    segments=[]
+    for i,edge in enumerate(edges):
+        start,end=vertices[i],vertices[(i+1)%n]
+        if edge.get('arc') is not None:
+            segment=arc_geometry(start,end,edge['arc'])
+        else:
+            segment=dict(kind='line',start=start,end=end,
+                         midpoint=((start[0]+end[0])/2,(start[1]+end[1])/2),
+                         length=hypot(end[0]-start[0],end[1]-start[1]),points=[start,end],path=[start,end])
+        segments.append(segment)
+        outline.extend(segment['points'][:-1])
+    poly = Polygon(outline)
     if not poly.is_valid or poly.area <= 0:
         raise ValueError('Kontur przecina sam siebie albo ma zerowe pole. Sprawdź kolejność narożników i wymiary.')
     x, y, right, bottom = poly.bounds
     normalized = affinity.translate(poly, -x, -y)
-    return DimensionedShape(normalized, {'width': right-x, 'height': bottom-y}, [(px-x, py-y) for px, py in vertices])
+    for segment in segments:
+        for name in ('start','end','midpoint','center'):
+            if name in segment:
+                px,py=segment[name]
+                segment[name]=(px-x,py-y)
+        segment['points']=[(px-x,py-y) for px,py in segment['points']]
+        segment['path']=segment['points']
+    return DimensionedShape(normalized, {'width': right-x, 'height': bottom-y}, [(px-x, py-y) for px, py in vertices], segments)
 
 
 def preview_png(path, rotation=0):

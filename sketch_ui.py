@@ -6,6 +6,7 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from sketch import build_contour, preview_png
+from curve_detection import suggest_arcs
 from irregular import NestResult, export_pdf
 from preferences import save_tesseract
 from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report, question_crop, monochrome
@@ -57,12 +58,81 @@ class DimensionQuestion(simpledialog.Dialog):
         return True
 
 
+class ArcQuestion(simpledialog.Dialog):
+    """Promień pochodzi z odpowiedzi, nigdy ze skali źródłowego obrazka."""
+    options=(('Odcinek prosty',None),('Łuk 90° — zgodnie z ruchem wskazówek',90),
+             ('Łuk 90° — przeciwnie do wskazówek',-90),
+             ('Półokrąg — zgodnie z ruchem wskazówek',180),
+             ('Półokrąg — przeciwnie do wskazówek',-180))
+
+    def __init__(self,parent,count,selected=0,spec=None,png=None,on_select=None,locked=False):
+        self.count,self.selected,self.spec,self.png=count,selected,spec or {},png
+        self.on_select,self.locked=on_select,locked
+        super().__init__(parent.winfo_toplevel(),'Sprawdź łuk i podaj promień')
+
+    def body(self,panel):
+        ttk.Label(panel,text='Wybierz bok między oznaczonymi punktami szkicu.',wraplength=450).pack(anchor='w')
+        self.edge=ttk.Combobox(panel,state='readonly',values=[f'P{i+1} → P{(i+1)%self.count+1}' for i in range(self.count)])
+        self.edge.current(self.selected)
+        self.edge.pack(fill='x',pady=5)
+        if self.locked:
+            self.edge.configure(state='disabled')
+        self.image_label=ttk.Label(panel)
+        self.image_label.pack(pady=6)
+        if self.png:
+            self.photo=tk.PhotoImage(data=self.png)
+            self.image_label.configure(image=self.photo)
+        ttk.Label(panel,text='Rodzaj boku (patrząc od pierwszego punktu do drugiego):',wraplength=450).pack(anchor='w')
+        self.kind=ttk.Combobox(panel,state='readonly',values=[label for label,_ in self.options],width=48)
+        self.kind.current(next((i for i,(_,sweep) in enumerate(self.options) if sweep==self.spec.get('sweep')),0))
+        self.kind.pack(fill='x',pady=5)
+        ttk.Label(panel,text='Promień R [mm] — przepisz ze szkicu:').pack(anchor='w')
+        self.radius=ttk.Entry(panel)
+        if self.spec.get('radius') is not None:
+            self.radius.insert(0,f"{self.spec['radius']:g}")
+        self.radius.pack(fill='x',pady=5)
+        self.derive=tk.BooleanVar(value=True)
+        ttk.Checkbutton(panel,text='Końce ćwiartki/półokręgu zgodne z osiami X/Y',variable=self.derive).pack(anchor='w')
+        ttk.Label(panel,text='Ta opcja wyznacza różnice X/Y z podanego promienia. Wyłącz ją, jeśli końce łuku wymagają osobnych wymiarów. Kierunek łuku i promień wymagają sprawdzenia.',wraplength=450).pack(anchor='w')
+        self.edge.bind('<<ComboboxSelected>>',self.edge_changed)
+        return self.radius
+
+    def edge_changed(self,event=None):
+        if self.on_select is None:
+            return
+        spec,png=self.on_select(self.edge.current())
+        self.kind.current(next((i for i,(_,sweep) in enumerate(self.options) if sweep==spec.get('sweep')),0))
+        self.radius.delete(0,'end')
+        if spec.get('radius') is not None:
+            self.radius.insert(0,f"{spec['radius']:g}")
+        if png:
+            self.photo=tk.PhotoImage(data=png)
+            self.image_label.configure(image=self.photo)
+
+    def wait_visibility(self,window=None):
+        super().wait_visibility(window)
+        self.lift();self.focus_force();self.radius.focus_set()
+
+    def validate(self):
+        from sketch import number
+        sweep=self.options[self.kind.current()][1]
+        try:
+            radius=number(self.radius.get(),'Promień') if sweep is not None else None
+            if sweep is not None and (radius is None or radius<=0):
+                raise ValueError('Wpisz dodatni promień w mm.')
+        except ValueError as exc:
+            messagebox.showerror('Promień',str(exc),parent=self);return False
+        self.result=dict(edge=self.edge.current(),sweep=sweep,radius=radius,derive=self.derive.get())
+        return True
+
+
 class SketchTab(ttk.Frame):
     def __init__(self, parent, on_accept):
         super().__init__(parent)
         self.on_accept = on_accept
         self.version = 0
         self.auto_busy = False
+        self.analysis_stale = False
         self.auto_queue = queue.Queue()
         self.detected_index = 0
         self.detection = None
@@ -72,6 +142,8 @@ class SketchTab(ttk.Frame):
         self.tesseract_override = None
         self.auto_questions = []
         self.question_relation = None
+        self.arc_specs = {}
+        self.arc_original = {}
 
         self.model = None
         self.source_path = None
@@ -80,6 +152,10 @@ class SketchTab(ttk.Frame):
         self.threshold = tk.DoubleVar(value=205)
         self.binary_preview = tk.BooleanVar(value=False)
         self.preview_job = None
+        self.analysis_region = None
+        self.region_select = False
+        self.region_start = None
+        self.gap = tk.IntVar(value=1)
         self.display_image = None
         self.rotation = 0
         self.points = []
@@ -111,6 +187,15 @@ class SketchTab(ttk.Frame):
         self.threshold_label=ttk.Label(panel,text='205 — zwiększ dla jasnych kresek, zmniejsz dla tła.',wraplength=325)
         self.threshold_label.pack(anchor='w')
         ttk.Checkbutton(panel,text='Pokaż czarno-biały obraz do odczytu',variable=self.binary_preview,command=self.draw_source).pack(anchor='w')
+        ttk.Button(panel,text='Zaznacz obszar samego obrysu',command=self.select_region).pack(fill='x',pady=2)
+        ttk.Button(panel,text='Użyj całej strony',command=self.clear_region).pack(fill='x',pady=2)
+        self.region_label=ttk.Label(panel,text='Obszar: cała strona',wraplength=325)
+        self.region_label.pack(anchor='w')
+        ttk.Label(panel,text='Domykanie przerw w kreskach (px):').pack(anchor='w')
+        gap_spin=ttk.Spinbox(panel,from_=0,to=3,textvariable=self.gap,state='readonly',width=5,command=self.gap_changed)
+        gap_spin.pack(anchor='w',pady=2)
+        self.propose_arcs=tk.BooleanVar(value=True)
+        ttk.Checkbutton(panel,text='Proponuj łuki — promienie do potwierdzenia',variable=self.propose_arcs,command=self.arcs_changed).pack(anchor='w')
         self.autoload = tk.BooleanVar(value=True)
         ttk.Checkbutton(panel,text='Odczytuj automatycznie po wczytaniu',variable=self.autoload).pack(anchor='w')
         self.detected_choice = ttk.Combobox(panel, state='disabled')
@@ -121,6 +206,7 @@ class SketchTab(ttk.Frame):
         ttk.Button(panel,text='Diagnostyka OCR — pokaż przyczynę',command=self.show_ocr_diagnostics).pack(fill='x',pady=2)
         ttk.Button(panel,text='Wskaż zainstalowany tesseract.exe',command=self.choose_tesseract).pack(fill='x',pady=2)
         ttk.Button(panel, text='Uzupełnij tylko brakujące wymiary', command=self.ask_missing).pack(fill='x', pady=3)
+        ttk.Button(panel,text='Sprawdź łuki / podaj promienie',command=self.edit_arc).pack(fill='x',pady=3)
         for text,command in [('Obróć szkic o 90°',self.rotate_preview),('Podgląd 100% / dopasuj',self.toggle_size)]:
             ttk.Button(panel,text=text,command=command).pack(fill='x',pady=2)
         manual_container=ttk.Frame(panel)
@@ -167,6 +253,8 @@ class SketchTab(ttk.Frame):
         self.source_canvas.configure(xscrollcommand=sx.set, yscrollcommand=sy.set)
         self.source_canvas.bind('<Configure>', lambda _: self.draw_source())
         self.source_canvas.bind('<Button-1>', self.click)
+        self.source_canvas.bind('<B1-Motion>',self.drag_region)
+        self.source_canvas.bind('<ButtonRelease-1>',self.finish_region)
         ttk.Label(content, text='Kontur obliczony z wymiarów — długości boków w mm').pack(anchor='w', pady=(8, 2))
         preview=ttk.Frame(content)
         preview.pack(fill='both',expand=True)
@@ -217,6 +305,9 @@ class SketchTab(ttk.Frame):
             return
         self.source_path, self.source_image = path, image
         self.source_png = png
+        self.analysis_region = None
+        self.region_select = False
+        self.region_label.config(text='Obszar: cała strona')
         self.rotation = 0
         self.detection = None
         self.detected_choice.set('')
@@ -229,7 +320,10 @@ class SketchTab(ttk.Frame):
             self.auto_read()
 
     def reset(self):
+        self.analysis_stale = False
         self.ocr_diagnostics = {}
+        self.arc_specs = {}
+        self.arc_original = {}
         self.points = []
         self.auto_questions = []
         self.question_relation = None
@@ -254,6 +348,9 @@ class SketchTab(ttk.Frame):
         try:
             png=self.source_png or preview_png(self.source_path,self.rotation)
             threshold=round(self.threshold.get())
+            region=self.analysis_region
+            gap=self.gap.get()
+            propose_arcs=self.propose_arcs.get()
         except Exception as exc:
             messagebox.showerror('Odczyt szkicu',str(exc));return
         executable=self.tesseract_override or find_tesseract()
@@ -265,7 +362,9 @@ class SketchTab(ttk.Frame):
         self.auto_status.config(text='Wykrywanie obrysu i lokalny OCR…' if executable else 'Wykrywanie obrysu… Brak Tesseract; zapytam o wymiary, których nie da się wyliczyć.')
         def worker():
             try:
-                detection=detect_contours(png,threshold)
+                detection=detect_contours(png,threshold,region=region,gap=gap)
+                if propose_arcs:
+                    detection.curve_candidates=[suggest_arcs(points) for points in detection.raw_contours]
                 diagnostics={}
                 words=ocr_numbers(detection.mask,executable,diagnostics=diagnostics)
                 self.auto_queue.put((version,detection,words,None,diagnostics))
@@ -287,6 +386,7 @@ class SketchTab(ttk.Frame):
                 self.auto_status.config(text=error)
                 messagebox.showerror('Lokalny odczyt',error)
             else:
+                self.analysis_stale=False
                 self.ocr_diagnostics=diagnostics
                 self.detection,self.auto_words=detection,words
                 self.detected_choice.config(state='readonly',values=[f'Obrys {i+1} — {len(points)} narożników' for i,points in enumerate(detection.contours)])
@@ -295,6 +395,10 @@ class SketchTab(ttk.Frame):
         self.after(100,self.poll_auto)
 
     def choose_detection(self,event=None):
+        if self.analysis_stale:
+            if event is not None:
+                self.detected_choice.current(self.detected_index)
+            self.check_analysis();return
         if self.detection is None or self.detected_choice.current()<0:
             return
         if event is not None and self.closed and not messagebox.askyesno('Inny obrys','Zmiana wykrytego obrysu wyczyści wymiary. Kontynuować?'):
@@ -302,6 +406,13 @@ class SketchTab(ttk.Frame):
             return
         self.detected_index = self.detected_choice.current()
         self.points=list(self.detection.contours[self.detected_choice.current()])
+        self.arc_specs = {}
+        self.arc_original = {}
+        if self.detection.curve_candidates:
+            proposed,specs=self.detection.curve_candidates[self.detected_choice.current()]
+            if specs:
+                self.points=list(proposed)
+                self.arc_specs={i:dict(spec) for i,spec in specs.items()}
         self.closed=True
         edges,extra=topology(self.points)
         self.edge_values=[(tk.StringVar(value=str(e['dx'])),tk.StringVar(value=str(e['dy']))) for e in edges]
@@ -321,6 +432,10 @@ class SketchTab(ttk.Frame):
         else:
             ocr_note=''
         self.auto_status.config(text=f'Wykryto {len(self.points)} narożników. OCR dopasował {len(accepted)} wymiarów; niepewne: {len(self.auto_questions)}.{ocr_note} Sprawdź czerwony obrys, potem uzupełnij tylko brakujące wymiary.')
+        if self.arc_specs:
+            self.auto_status.config(text=self.auto_status.cget('text')+f'\nPropozycje łuków: {len(self.arc_specs)}. Potwierdź ich końce, kierunek i promień. Inne zaokrąglenia mogą pozostać niewykryte.')
+        if self.detection.warnings:
+            self.auto_status.config(text=self.auto_status.cget('text')+'\n'+'\n'.join(self.detection.warnings))
         # Obrys musi być sprawdzony przed użyciem: użytkownik wybiera, kiedy
         # rozpocząć pytania, aby nie ukrywać czerwonego podglądu dialogiem.
 
@@ -362,12 +477,68 @@ class SketchTab(ttk.Frame):
         ttk.Button(dialog,text='Zapisz raport do pliku',command=save).pack(fill='x')
 
     def current_edges(self):
-        return [dict(dx=dx.get(),dy=dy.get()) for dx,dy in self.edge_values]
+        edges=[dict(dx=dx.get(),dy=dy.get()) for dx,dy in self.edge_values]
+        for i,spec in self.arc_specs.items():
+            if i<len(edges):
+                edges[i]['arc']={key:spec[key] for key in ('radius','sweep')}
+        return edges
+
+    def edit_arc(self,index=None):
+        if not self.closed:
+            messagebox.showinfo('Łuki','Najpierw wykryj lub zamknij obrys.');return False
+        explicit_index=index is not None
+        if index is None:
+            selected=self.edge_table.selection()
+            index=self.edge_table.index(selected[0]) if selected else 0
+        locked=explicit_index
+        def select_preview(i):
+            a,b=self.points[i],self.points[(i+1)%len(self.points)]
+            question=dict(start=i,end=(i+1)%len(self.points),axis='x',
+                          image_line=(*a,*b),label_bounds=(min(a[0],b[0])-30,min(a[1],b[1])-30,max(a[0],b[0])+30,max(a[1],b[1])+30))
+            self.question_relation=question;self.draw_source();self.update_idletasks()
+            png=question_crop(self.source_png,question) if self.source_png else None
+            return self.arc_specs.get(i,{}),png
+        spec,png=select_preview(index)
+        result=ArcQuestion(self,len(self.points),index,spec,png=png,on_select=select_preview,locked=locked).result
+        self.question_relation=None;self.draw_source()
+        if result is None:
+            return False
+        index=result['edge']
+        a,b=self.points[index],self.points[(index+1)%len(self.points)]
+        delta=(b[0]-a[0],b[1]-a[1])
+        if result['derive'] and abs(result['sweep'] or 0)==90 and min(abs(delta[0]),abs(delta[1]))<.01:
+            messagebox.showerror('Końce łuku','Ćwiartka wymaga dwóch różnych poziomów X i Y. Sprawdź końce i rodzaj łuku.')
+            return False
+        if result['sweep'] is None:
+            self.arc_specs.pop(index,None)
+            if index in self.arc_original:
+                for variable,value in zip(self.edge_values[index],self.arc_original.pop(index)):
+                    variable.set(value)
+        else:
+            if index not in self.arc_original:
+                self.arc_original[index]=tuple(variable.get() for variable in self.edge_values[index])
+            self.arc_specs[index]={**self.arc_specs.get(index,{}),'radius':result['radius'],'sweep':result['sweep']}
+            if result['derive']:
+                a,b=self.points[index],self.points[(index+1)%len(self.points)]
+                delta=(b[0]-a[0],b[1]-a[1]);radius=result['radius']
+                if abs(result['sweep'])==90:
+                    offsets=[radius*(1 if value>0 else -1) for value in delta]
+                else:
+                    axis=0 if abs(delta[0])>abs(delta[1]) else 1
+                    offsets=[0,0];offsets[axis]=2*radius*(1 if delta[axis]>0 else -1)
+                for variable,value in zip(self.edge_values[index],offsets):
+                    variable.set(f'{value:g}')
+        self.invalidate();return True
 
     def ask_missing(self):
+        if not self.check_analysis():
+            return
         if not self.closed:
             messagebox.showinfo('Obrys','Najpierw wykryj obrys lub zaznacz narożniki i zamknij kontur.')
             return
+        for index in list(self.arc_specs):
+            if self.arc_specs[index].get('radius') is None and not self.edit_arc(index):
+                return
         while True:
             try:
                 model=build_contour(self.current_edges(),self.extra)
@@ -414,7 +585,72 @@ class SketchTab(ttk.Frame):
             item['value']=value
             self.extra.append(item);self.render_extra();self.invalidate()
 
+    def check_analysis(self):
+        if self.analysis_stale:
+            messagebox.showinfo('Ponów odczyt','Zmieniono ustawienia analizy. Kliknij „Wykryj obrys i odczytaj wymiary lokalnie”, zanim uzupełnisz wymiary lub zbudujesz kontur.')
+            return False
+        return True
+
+    def arcs_changed(self):
+        self.analysis_stale=True;self.invalidate()
+        self.auto_status.config(text='Zmieniono wyszukiwanie łuków. Ponów wykrywanie obrysu.')
+
+    def select_region(self):
+        if self.source_image is None:
+            messagebox.showinfo('Obszar obrysu','Najpierw wczytaj szkic.');return
+        self.region_select=True
+        self.region_start=None
+        self.source_canvas.configure(cursor='crosshair')
+        self.source_heading.config(text='Przeciągnij prostokąt wokół całej formatki, zostawiając linie wymiarowe na zewnątrz.')
+
+    def clear_region(self):
+        self.analysis_region=None;self.region_select=False;self.region_start=None
+        self.source_canvas.configure(cursor='')
+        self.region_label.config(text='Obszar: cała strona')
+        self.source_heading.config(text='Szkic: sprawdź automatycznie wykryty czerwony obrys')
+        self.analysis_stale=True
+        self.invalidate();self.draw_source()
+        self.auto_status.config(text='Wybrano całą stronę. Ponów wykrywanie obrysu.')
+
+    def gap_changed(self):
+        self.analysis_stale=True
+        self.invalidate()
+        self.auto_status.config(text='Zmieniono domykanie przerw. Ponów wykrywanie i sprawdź małe detale obrysu.')
+
+    def source_position(self,event):
+        c=self.source_canvas
+        x=(c.canvasx(event.x)-self.image_origin[0])*self.image_factor
+        y=(c.canvasy(event.y)-self.image_origin[1])*self.image_factor
+        return (max(0,min(self.source_image.width(),x)),max(0,min(self.source_image.height(),y)))
+
+    def drag_region(self,event):
+        if not self.region_select or self.region_start is None:
+            return
+        x,y=self.source_position(event);a,b=self.region_start
+        self.source_canvas.delete('region-drag')
+        self.source_canvas.create_rectangle(10+a/self.image_factor,10+b/self.image_factor,
+                                           10+x/self.image_factor,10+y/self.image_factor,
+                                           outline='#2763b5',width=2,dash=(4,3),tags=('region-drag',))
+
+    def finish_region(self,event):
+        if not self.region_select or self.region_start is None:
+            return
+        x,y=self.source_position(event);a,b=self.region_start
+        self.region_start=None
+        if abs(x-a)<20 or abs(y-b)<20:
+            return
+        self.analysis_region=(min(x,a),min(y,b),max(x,a),max(y,b))
+        self.region_select=False;self.source_canvas.configure(cursor='')
+        self.region_label.config(text='Obszar: zaznaczona formatka. OCR nadal czyta wymiary z całej strony.')
+        self.source_heading.config(text='Szkic: sprawdź automatycznie wykryty czerwony obrys')
+        self.analysis_stale=True
+        self.invalidate();self.draw_source()
+        self.auto_status.config(text='Wybrano obszar. Kliknij „Wykryj obrys i odczytaj wymiary lokalnie”.')
+
     def click(self, event):
+        if self.region_select and self.source_image is not None:
+            self.region_start=self.source_position(event)
+            return
         if not self.manual_enabled.get() or self.source_image is None or self.closed:
             return
         if len(self.points) >= 500:
@@ -438,6 +674,7 @@ class SketchTab(ttk.Frame):
             messagebox.showinfo('Narożniki', 'Zaznacz co najmniej trzy narożniki.')
             return
         self.closed = True
+        self.analysis_stale=False
         self.edge_values = []
         for i, (x, y) in enumerate(self.points):
             xx, yy = self.points[(i+1) % len(self.points)]
@@ -460,6 +697,8 @@ class SketchTab(ttk.Frame):
                 return
             self.closed = False
             self.edge_values = []
+            self.arc_specs = {}
+            self.arc_original = {}
             self.extra = []
             self.render_edges()
             self.render_extra()
@@ -549,6 +788,11 @@ class SketchTab(ttk.Frame):
             return
         self.rotation, self.source_image = rotation, image
         self.source_png = png
+        self.analysis_region = None
+        self.region_select = False
+        self.region_start = None
+        self.source_canvas.configure(cursor='')
+        self.region_label.config(text='Obszar: cała strona')
         self.detection = None
         self.detected_choice.set('')
         self.detected_choice.config(state='disabled',values=())
@@ -562,6 +806,7 @@ class SketchTab(ttk.Frame):
         self.threshold_label.config(text=f'{round(self.threshold.get())} — zwiększ dla jasnych kresek, zmniejsz dla tła.')
         if self.source_image is None:
             return
+        self.analysis_stale=True
         self.invalidate()
         self.auto_status.config(text='Zmieniono próg. Ponów wykrywanie, aby zastosować go do obrysu i OCR.')
         if self.preview_job is not None:
@@ -590,10 +835,15 @@ class SketchTab(ttk.Frame):
         self.image_origin = (10, 10)
         c.create_image(10, 10, image=self.display_image, anchor='nw')
         c.configure(scrollregion=(0,0,max(c.winfo_width(),self.display_image.width()+20),max(c.winfo_height(),self.display_image.height()+20)))
+        if self.analysis_region:
+            c.create_rectangle(*(10+v/factor for v in self.analysis_region),outline='#2763b5',dash=(4,3),width=2,tags=('analysis-region',))
         xy = [(10+x/factor,10+y/factor) for x,y in self.points]
         if len(xy)>1:
-            line = xy + ([xy[0]] if self.closed else [])
-            c.create_line(*[v for p in line for v in p], fill='#ce302d', width=2)
+            count=len(xy) if self.closed else len(xy)-1
+            for i in range(count):
+                path=self.arc_specs.get(i,{}).get('source_path')
+                line=[(10+x/factor,10+y/factor) for x,y in path] if path else [xy[i],xy[(i+1)%len(xy)]]
+                c.create_line(*[v for p in line for v in p],fill='#ce302d',width=2)
         if self.question_relation is not None:
             item=self.question_relation
             if item.get('image_line'):
@@ -613,12 +863,14 @@ class SketchTab(ttk.Frame):
             c.create_text(x+5,y-8,text=f'P{i+1}',fill='#a60000',anchor='w')
 
     def build(self):
+        if not self.check_analysis():
+            return
         self.invalidate()
         if not self.closed:
             messagebox.showinfo('Kontur', 'Najpierw zaznacz narożniki i zamknij kontur.')
             return
         try:
-            self.model = build_contour([dict(dx=dx.get(),dy=dy.get()) for dx,dy in self.edge_values], self.extra)
+            self.model = build_contour(self.current_edges(), self.extra)
         except ValueError as exc:
             self.status.config(text=str(exc))
             messagebox.showerror('Uzupełnij lub popraw wymiary', str(exc))
@@ -646,7 +898,8 @@ class SketchTab(ttk.Frame):
         ox,oy=(cw-w*scale)/2,(ch-h*scale)/2
         vertices=self.model.vertices
         screen=[(ox+x*scale,oy+y*scale) for x,y in vertices]
-        c.create_polygon(*[v for p in screen for v in p],fill='#71b7dc',outline='#285b79',width=2)
+        outline=[(ox+x*scale,oy+y*scale) for x,y in self.model.polygon.exterior.coords]
+        c.create_polygon(*[v for p in outline for v in p],fill='#71b7dc',outline='#285b79',width=2)
         def mm(value):
             return f'{value:.3f}'.rstrip('0').rstrip('.').replace('.',',')
         def label(x,y,text,angle=0,tag='dimension'):
@@ -663,14 +916,22 @@ class SketchTab(ttk.Frame):
         for i,(x,y) in enumerate(vertices):
             xx,yy=vertices[(i+1)%len(vertices)]
             dx,dy=xx-x,yy-y
-            length=hypot(dx,dy)
-            self.edge_table.insert('', 'end',values=(f'Bok {i+1}',mm(length)))
-            nx,ny=-dy/length,dx/length
+            segment=self.model.segments[i]
+            length=segment['length']
+            is_arc=segment['kind']=='arc'
+            self.edge_table.insert('', 'end',values=(f'{"Łuk" if is_arc else "Bok"} {i+1}',mm(length)))
+            chord=hypot(dx,dy)
+            nx,ny=-dy/chord,dx/chord
             if self.model.polygon.contains(Point((x+xx)/2+nx*.01,(y+yy)/2+ny*.01)):
                 nx,ny=-nx,-ny
             ax,ay=screen[i];bx,by=screen[(i+1)%len(screen)]
             angle=90 if abs(dx)<.001 else 0
-            label((ax+bx)/2+nx*19,(ay+by)/2+ny*19,mm(length),angle=angle,tag='edge-dimension')
+            mid=segment['midpoint']
+            label(ox+mid[0]*scale+nx*19,oy+mid[1]*scale+ny*19,
+                  'R'+mm(segment['radius']) if is_arc else mm(length),
+                  angle=0 if is_arc else angle,tag='radius-dimension' if is_arc else 'edge-dimension')
+            if is_arc:
+                continue
             if abs(dy)<.001:
                 covered.add(('x',round(min(x,xx),3),round(max(x,xx),3)))
             if abs(dx)<.001:
