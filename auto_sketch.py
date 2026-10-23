@@ -488,25 +488,50 @@ def unread_dimension_lines(points,mask,lines=None):
     return [item for _,item in proposals.values()]
 
 
-def question_crop(png,question):
-    """Fragment rzeczywistego napisu albo otoczenia środka wskazanej linii."""
-    bounds=question.get('label_bounds')
-    line=question.get('image_line')
+def question_crop(png,question,include_line=False):
+    """Fragment źródła; opcjonalnie cała wskazana linia z otoczeniem.
+
+    include_line służy powiększanemu podglądowi: oba końce niebieskiej
+    linii, napis i opcjonalne context_bounds pozostają w obrazie. Kontekst
+    nie jest oznaczany ramką OCR. Nie zmienia współrzędnych pytania.
+    """
+    def coordinates(value):
+        try:
+            values=tuple(float(v) for v in value)
+        except (TypeError,ValueError):
+            return None
+        return values if len(values)==4 and all(np.isfinite(v) for v in values) else None
+    bounds=coordinates(question.get('label_bounds'))
+    line=coordinates(question.get('image_line'))
+    context=coordinates(question.get('context_bounds'))
     if bounds:
+        ax,ay,bx,by=bounds
+        bounds=(min(ax,bx),min(ay,by),max(ax,bx),max(ay,by))
+    if include_line and line:
+        ax,ay,bx,by=line
+        xs,ys=[ax,bx],[ay,by]
+        if bounds:
+            xs.extend((bounds[0],bounds[2]));ys.extend((bounds[1],bounds[3]))
+        if context:
+            xs.extend((context[0],context[2]));ys.extend((context[1],context[3]))
+        left,right=min(xs)-30,max(xs)+30
+        top,bottom=min(ys)-30,max(ys)+30
+    elif bounds:
         x0,y0,x1,y1=bounds
-        cx,cy=(x0+x1)/2,(y0+y1)/2
+        cx,cy=x0/2+x1/2,y0/2+y1/2
         halfw,halfh=max(45,(x1-x0)/2+20),max(40,(y1-y0)/2+20)
+        left,right,top,bottom=cx-halfw,cx+halfw,cy-halfh,cy+halfh
     elif line:
         x0,y0,x1,y1=line
-        cx,cy=(x0+x1)/2,(y0+y1)/2
-        halfw,halfh=95,95
+        cx,cy=x0/2+x1/2,y0/2+y1/2
+        left,right,top,bottom=cx-95,cx+95,cy-95,cy+95
     else:
         return None
     pix=fitz.Pixmap(png)
     if pix.colorspace!=fitz.csRGB:
         pix=fitz.Pixmap(fitz.csRGB,pix)
-    x0,x1=max(0,int(cx-halfw)),min(pix.width,int(cx+halfw)+1)
-    y0,y1=max(0,int(cy-halfh)),min(pix.height,int(cy+halfh)+1)
+    x0,x1=max(0,int(left)),min(pix.width,int(right)+1)
+    y0,y1=max(0,int(top)),min(pix.height,int(bottom)+1)
     if x1<=x0 or y1<=y0:
         return None
     pixels=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width,pix.n)[y0:y1,x0:x1].copy()

@@ -1,12 +1,13 @@
 """Edytor dowolnego konturu wielokątnego ze szkicu, wyłącznie lokalny."""
 import queue
 import threading
-from math import ceil, isfinite, hypot
+from math import isfinite, hypot
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 from sketch import build_contour, preview_png
 from curve_detection import suggest_arcs
+from zoom_preview import ZoomPreview, OverlayZoomPreview, bounded_scale, photo_from_png
 from irregular import NestResult, export_pdf
 from preferences import save_tesseract
 from auto_sketch import detect_contours, topology, find_tesseract, ocr_numbers, match_dimensions, missing_dimension, known_dimension, format_ocr_report, question_crop, monochrome
@@ -21,13 +22,12 @@ class DimensionQuestion(simpledialog.Dialog):
         super().__init__(self.owner,title)
 
     def body(self,master):
+        master.pack(fill='both',expand=True)
         ttk.Label(master,text=self.prompt,wraplength=450).pack(anchor='w',pady=5)
         if self.png:
-            self.photo=tk.PhotoImage(data=self.png)
-            factor=max(1,min(3,450//max(1,self.photo.width()),330//max(1,self.photo.height())))
-            self.photo=self.photo.zoom(factor,factor)
-            ttk.Label(master,image=self.photo).pack(pady=8)
-            ttk.Label(master,text='Fragment szkicu: niebieska linia i ramka wskazują pytany wymiar.').pack()
+            self.preview=ZoomPreview(master,self.png)
+            self.preview.pack(fill='both',expand=True,pady=8)
+            ttk.Label(master,text='Niebieska linia wskazuje pytany wymiar.',wraplength=450).pack(anchor='w')
         ttk.Label(master,text='Wartość w milimetrach:').pack(anchor='w',pady=(8,2))
         self.entry=ttk.Entry(master)
         if self.initial is not None:
@@ -71,17 +71,17 @@ class ArcQuestion(simpledialog.Dialog):
         super().__init__(parent.winfo_toplevel(),'Sprawdź łuk i podaj promień')
 
     def body(self,panel):
+        panel.pack(fill='both',expand=True)
         ttk.Label(panel,text='Wybierz bok między oznaczonymi punktami szkicu.',wraplength=450).pack(anchor='w')
         self.edge=ttk.Combobox(panel,state='readonly',values=[f'P{i+1} → P{(i+1)%self.count+1}' for i in range(self.count)])
         self.edge.current(self.selected)
         self.edge.pack(fill='x',pady=5)
         if self.locked:
             self.edge.configure(state='disabled')
-        self.image_label=ttk.Label(panel)
-        self.image_label.pack(pady=6)
+        self.preview=None
         if self.png:
-            self.photo=tk.PhotoImage(data=self.png)
-            self.image_label.configure(image=self.photo)
+            self.preview=ZoomPreview(panel,self.png,height=190)
+            self.preview.pack(fill='both',expand=True,pady=6)
         ttk.Label(panel,text='Rodzaj boku (patrząc od pierwszego punktu do drugiego):',wraplength=450).pack(anchor='w')
         self.kind=ttk.Combobox(panel,state='readonly',values=[label for label,_ in self.options],width=48)
         self.kind.current(next((i for i,(_,sweep) in enumerate(self.options) if sweep==self.spec.get('sweep')),0))
@@ -106,8 +106,8 @@ class ArcQuestion(simpledialog.Dialog):
         if spec.get('radius') is not None:
             self.radius.insert(0,f"{spec['radius']:g}")
         if png:
-            self.photo=tk.PhotoImage(data=png)
-            self.image_label.configure(image=self.photo)
+            if self.preview is not None:
+                self.preview.set_image(png)
 
     def wait_visibility(self,window=None):
         super().wait_visibility(window)
@@ -163,6 +163,14 @@ class SketchTab(ttk.Frame):
         self.extra = []
         self.closed = False
         self.full_size = False
+        self.source_zoom = None
+        self.source_panning = False
+        self.source_render_key = None
+        self.source_background_key = None
+        self.source_background = None
+        self.large_window = None
+        self.large_preview = None
+        self.large_source_key = None
         self.image_origin = (0, 0)
         self.image_factor = 1
         sidebar = ttk.Frame(self)
@@ -240,6 +248,16 @@ class SketchTab(ttk.Frame):
         content.pack(side='right', fill='both', expand=True)
         self.source_heading=ttk.Label(content,text='Szkic: sprawdź automatycznie wykryty czerwony obrys')
         self.source_heading.pack(anchor='w')
+        zoom_bar=ttk.Frame(content)
+        zoom_bar.pack(fill='x',pady=3)
+        for text,command in [('−',lambda:self.zoom_source(1/1.25)),
+                             ('+',lambda:self.zoom_source(1.25)),
+                             ('100%',lambda:self.zoom_source(absolute=1)),
+                             ('Dopasuj',lambda:self.zoom_source(fit=True))]:
+            ttk.Button(zoom_bar,text=text,command=command,takefocus=False).pack(side='left',padx=(0,3))
+        self.source_zoom_label=ttk.Label(zoom_bar,text='Dopasuj')
+        self.source_zoom_label.pack(side='left',padx=4)
+        ttk.Button(zoom_bar,text='Duży podgląd',command=self.open_large_preview,takefocus=False).pack(side='left',padx=4)
         holder = ttk.Frame(content)
         holder.pack(fill='both', expand=True)
         holder.rowconfigure(0, weight=1)
@@ -255,6 +273,9 @@ class SketchTab(ttk.Frame):
         self.source_canvas.bind('<Button-1>', self.click)
         self.source_canvas.bind('<B1-Motion>',self.drag_region)
         self.source_canvas.bind('<ButtonRelease-1>',self.finish_region)
+        self.source_canvas.bind('<MouseWheel>',self.source_wheel)
+        self.source_canvas.bind('<Button-4>',lambda e:self.source_wheel(e,1))
+        self.source_canvas.bind('<Button-5>',lambda e:self.source_wheel(e,-1))
         ttk.Label(content, text='Kontur obliczony z wymiarów — długości boków w mm').pack(anchor='w', pady=(8, 2))
         preview=ttk.Frame(content)
         preview.pack(fill='both',expand=True)
@@ -305,6 +326,8 @@ class SketchTab(ttk.Frame):
             return
         self.source_path, self.source_image = path, image
         self.source_png = png
+        self.source_zoom = None
+        self.source_panning = False
         self.analysis_region = None
         self.region_select = False
         self.region_label.config(text='Obszar: cała strona')
@@ -496,7 +519,7 @@ class SketchTab(ttk.Frame):
             question=dict(start=i,end=(i+1)%len(self.points),axis='x',
                           image_line=(*a,*b),label_bounds=(min(a[0],b[0])-30,min(a[1],b[1])-30,max(a[0],b[0])+30,max(a[1],b[1])+30))
             self.question_relation=question;self.draw_source();self.update_idletasks()
-            png=question_crop(self.source_png,question) if self.source_png else None
+            png=question_crop(self.source_png,question,include_line=True) if self.source_png else None
             return self.arc_specs.get(i,{}),png
         spec,png=select_preview(index)
         result=ArcQuestion(self,len(self.points),index,spec,png=png,on_select=select_preview,locked=locked).result
@@ -572,7 +595,16 @@ class SketchTab(ttk.Frame):
             else:
                 text='Nie znaleziono jednoznacznej linii wymiarowej dla tej odległości. Podaj wymiar wskazany niebieską strzałką, jeśli znasz go ze szkicu, lub anuluj.'
             text+='\nAnuluj zachowa dotychczasową pracę.'
-            png=question_crop(self.detection.png,question) if self.detection is not None else None
+            preview_question=dict(question)
+            if not preview_question.get('image_line'):
+                a,b=self.points[question['start']],self.points[question['end']]
+                preview_question['context_bounds']=(min(a[0],b[0]),min(a[1],b[1]),max(a[0],b[0]),max(a[1],b[1]))
+                if question['axis']=='x':
+                    preview_question['image_line']=(a[0],(a[1]+b[1])/2,b[0],(a[1]+b[1])/2)
+                else:
+                    preview_question['image_line']=((a[0]+b[0])/2,a[1],(a[0]+b[0])/2,b[1])
+            source=self.source_png or (self.detection.png if self.detection is not None else None)
+            png=question_crop(source,preview_question,include_line=True) if source else None
             value=DimensionQuestion(self,title,text,png=png,initial=suggestion).result
             self.question_relation=None;self.draw_source()
             if value is None:
@@ -624,6 +656,9 @@ class SketchTab(ttk.Frame):
         return (max(0,min(self.source_image.width(),x)),max(0,min(self.source_image.height(),y)))
 
     def drag_region(self,event):
+        if self.source_panning:
+            self.source_canvas.scan_dragto(event.x,event.y,gain=1)
+            return
         if not self.region_select or self.region_start is None:
             return
         x,y=self.source_position(event);a,b=self.region_start
@@ -633,6 +668,10 @@ class SketchTab(ttk.Frame):
                                            outline='#2763b5',width=2,dash=(4,3),tags=('region-drag',))
 
     def finish_region(self,event):
+        if self.source_panning:
+            self.source_panning=False
+            self.source_canvas.configure(cursor='')
+            return
         if not self.region_select or self.region_start is None:
             return
         x,y=self.source_position(event);a,b=self.region_start
@@ -650,6 +689,11 @@ class SketchTab(ttk.Frame):
     def click(self, event):
         if self.region_select and self.source_image is not None:
             self.region_start=self.source_position(event)
+            return
+        if (not self.manual_enabled.get() or self.closed) and self.source_image is not None:
+            self.source_panning=True
+            self.source_canvas.scan_mark(event.x,event.y)
+            self.source_canvas.configure(cursor='fleur')
             return
         if not self.manual_enabled.get() or self.source_image is None or self.closed:
             return
@@ -788,6 +832,8 @@ class SketchTab(ttk.Frame):
             return
         self.rotation, self.source_image = rotation, image
         self.source_png = png
+        self.source_zoom = None
+        self.source_panning = False
         self.analysis_region = None
         self.region_select = False
         self.region_start = None
@@ -799,8 +845,35 @@ class SketchTab(ttk.Frame):
         self.reset()
 
     def toggle_size(self):
-        self.full_size = not self.full_size
+        self.zoom_source(absolute=1,fit=self.source_zoom is not None)
+
+    def zoom_source(self,multiplier=1,event=None,absolute=None,fit=False):
+        if self.source_image is None:
+            return
+        c=self.source_canvas
+        anchor=(event.x,event.y) if event is not None else (c.winfo_width()/2,c.winfo_height()/2)
+        source=((c.canvasx(anchor[0])-10)*self.image_factor,
+                (c.canvasy(anchor[1])-10)*self.image_factor)
+        requested=absolute if absolute is not None else multiplier/self.image_factor
+        self.source_zoom=None if fit else bounded_scale(self.source_image.width(),self.source_image.height(),requested)
+        self.full_size=self.source_zoom==1
         self.draw_source()
+        if fit:
+            c.xview_moveto(0);c.yview_moveto(0)
+        else:
+            width=max(c.winfo_width(),self.display_image.width()+20)
+            height=max(c.winfo_height(),self.display_image.height()+20)
+            c.xview_moveto((10+source[0]/self.image_factor-anchor[0])/width)
+            c.yview_moveto((10+source[1]/self.image_factor-anchor[1])/height)
+
+    def source_wheel(self,event,direction=None):
+        if direction is None:
+            delta=getattr(event,'delta',0)
+            if not delta:
+                return 'break'
+            direction=1 if delta>0 else -1
+        self.zoom_source(1.25 if direction>0 else 1/1.25,event=event)
+        return 'break'
 
     def threshold_changed(self, value=None):
         self.threshold_label.config(text=f'{round(self.threshold.get())} — zwiększ dla jasnych kresek, zmniejsz dla tła.')
@@ -817,37 +890,90 @@ class SketchTab(ttk.Frame):
         self.preview_job=None
         self.draw_source()
 
+    def source_background_png(self):
+        key=(id(self.source_image),self.binary_preview.get(),round(self.threshold.get()))
+        if key!=self.source_background_key:
+            png=self.source_png
+            if not png:
+                png=self.source_image.tk.call(self.source_image,'data','-format','png')
+            if self.binary_preview.get():
+                import pymupdf as fitz
+                mask=monochrome(png,round(self.threshold.get()))
+                samples=((~mask).astype('uint8')*255).tobytes()
+                pix=fitz.Pixmap(fitz.csGRAY,mask.shape[1],mask.shape[0],samples,False)
+                png=pix.tobytes('png')
+            self.source_background,self.source_background_key=png,key
+        return self.source_background
+
+    def open_large_preview(self):
+        if self.source_image is None:
+            messagebox.showinfo('Duży podgląd','Najpierw wczytaj szkic.');return
+        if self.large_window is not None and self.large_window.winfo_exists():
+            self.large_window.deiconify();self.large_window.lift();return
+        dialog=tk.Toplevel(self)
+        self.large_window=dialog
+        dialog.title('Duży podgląd szkicu i wykrytego obrysu')
+        width=min(1200,max(600,dialog.winfo_screenwidth()-100))
+        height=min(850,max(400,dialog.winfo_screenheight()-100))
+        dialog.geometry(f'{width}x{height}')
+        dialog.minsize(540,360)
+        ttk.Label(dialog,text='Podgląd narożników i pytanego wymiaru. Zbliżenie nie zmienia geometrii.',wraplength=700).pack(anchor='w',padx=8,pady=5)
+        self.large_preview=OverlayZoomPreview(dialog,self.source_background_png(),
+            overlay=lambda canvas,scale:self.draw_source_overlays(canvas,scale,(0,0)),
+            width=width-40,height=height-110)
+        self.large_preview.pack(fill='both',expand=True,padx=8,pady=(0,8))
+        self.large_source_key=self.source_background_key
+        def close():
+            self.large_window=None;self.large_preview=None;self.large_source_key=None
+            dialog.destroy()
+        dialog.protocol('WM_DELETE_WINDOW',close)
+        dialog.lift()
+
     def draw_source(self):
         c = self.source_canvas
         c.delete('all')
         if self.source_image is None:
             return
-        factor = 1 if self.full_size else max(1, ceil(self.source_image.width()/max(1,c.winfo_width()-20)), ceil(self.source_image.height()/max(1,c.winfo_height()-20)))
-        image=self.source_image
-        if self.binary_preview.get() and self.source_png:
-            import pymupdf as fitz
-            mask=monochrome(self.source_png,round(self.threshold.get()))
-            samples=((~mask).astype('uint8')*255).tobytes()
-            pix=fitz.Pixmap(fitz.csGRAY,mask.shape[1],mask.shape[0],samples,False)
-            image=tk.PhotoImage(data=pix.tobytes('png'))
-        self.display_image = image.subsample(factor, factor)
-        self.image_factor = factor
+        scale=self.source_zoom
+        if scale is None:
+            scale=min(1,max(1,c.winfo_width()-20)/self.source_image.width(),
+                      max(1,c.winfo_height()-20)/self.source_image.height())
+        scale=bounded_scale(self.source_image.width(),self.source_image.height(),scale)
+        png=self.source_background_png()
+        key=(self.source_background_key,scale)
+        if key!=self.source_render_key:
+            self.display_image=photo_from_png(png,scale,master=c)
+            self.source_render_key=key
+        self.source_zoom_label.config(text=f'{scale*100:.0f}%')
+        self.image_factor = 1/scale
         self.image_origin = (10, 10)
         c.create_image(10, 10, image=self.display_image, anchor='nw')
         c.configure(scrollregion=(0,0,max(c.winfo_width(),self.display_image.width()+20),max(c.winfo_height(),self.display_image.height()+20)))
+        self.draw_source_overlays(c,scale)
+        if self.large_window is not None and self.large_window.winfo_exists():
+            if self.large_source_key!=self.source_background_key:
+                self.large_preview.set_image(png)
+                self.large_source_key=self.source_background_key
+            else:
+                self.large_preview.refresh_overlay()
+
+    def draw_source_overlays(self,c,scale,origin=(10,10)):
+        ox,oy=origin
+        def coordinates(values):
+            return tuple((ox if i%2==0 else oy)+v*scale for i,v in enumerate(values))
         if self.analysis_region:
-            c.create_rectangle(*(10+v/factor for v in self.analysis_region),outline='#2763b5',dash=(4,3),width=2,tags=('analysis-region',))
-        xy = [(10+x/factor,10+y/factor) for x,y in self.points]
+            c.create_rectangle(*coordinates(self.analysis_region),outline='#2763b5',dash=(4,3),width=2,tags=('analysis-region',))
+        xy = [(ox+x*scale,oy+y*scale) for x,y in self.points]
         if len(xy)>1:
             count=len(xy) if self.closed else len(xy)-1
             for i in range(count):
                 path=self.arc_specs.get(i,{}).get('source_path')
-                line=[(10+x/factor,10+y/factor) for x,y in path] if path else [xy[i],xy[(i+1)%len(xy)]]
+                line=[(ox+x*scale,oy+y*scale) for x,y in path] if path else [xy[i],xy[(i+1)%len(xy)]]
                 c.create_line(*[v for p in line for v in p],fill='#ce302d',width=2)
         if self.question_relation is not None:
             item=self.question_relation
             if item.get('image_line'):
-                line=tuple(10+v/factor for v in item['image_line'])
+                line=coordinates(item['image_line'])
             else:
                 a,b=xy[item['start']],xy[item['end']]
                 if item['axis']=='x':
@@ -855,12 +981,11 @@ class SketchTab(ttk.Frame):
                 else:
                     line=((a[0]+b[0])/2,a[1],(a[0]+b[0])/2,b[1])
             if item.get('label_bounds'):
-                bounds=tuple(10+v/factor for v in item['label_bounds'])
-                c.create_rectangle(*bounds,outline='#f09000',width=3)
-            c.create_line(*line,fill='#005de0',width=3,arrow='both')
+                c.create_rectangle(*coordinates(item['label_bounds']),outline='#f09000',width=3)
+            c.create_line(*line,fill='#005de0',width=3,arrow='both',tags=('question-line',))
         for i,(x,y) in enumerate(xy):
             c.create_oval(x-3,y-3,x+3,y+3,fill='#ce302d',outline='white')
-            c.create_text(x+5,y-8,text=f'P{i+1}',fill='#a60000',anchor='w')
+            c.create_text(x+5,y-8,text=f'P{i+1}',fill='#a60000',anchor='w',tags=('source-point-label',))
 
     def build(self):
         if not self.check_analysis():

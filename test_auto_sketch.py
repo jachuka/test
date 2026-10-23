@@ -239,6 +239,67 @@ class AutoSketchTests(unittest.TestCase):
         self.assertTrue(any(value<100 for value in pix.samples))
         self.assertIsNone(question_crop(png,{}))
 
+    def test_zoomable_question_crop_keeps_both_line_ends_and_original_context(self):
+        from copy import deepcopy
+        from auto_sketch import question_crop
+        with fitz.open() as doc:
+            page=doc.new_page(width=500,height=420)
+            # Dwa oryginalne oznaczenia poza linią muszą pozostać czytelne.
+            page.draw_rect(fitz.Rect(40,180,60,185),color=(0,0,0),fill=(0,0,0))
+            page.draw_rect(fitz.Rect(440,180,460,185),color=(0,0,0),fill=(0,0,0))
+            png=page.get_pixmap(alpha=False).tobytes('png')
+        question=dict(image_line=(50,200,450,200),label_bounds=(235,235,265,250),value=None)
+        original=deepcopy(question)
+        pix=fitz.Pixmap(question_crop(png,question,include_line=True))
+        pixels=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width,pix.n)
+        self.assertEqual((pix.width,pix.height),(461,111))
+        # X źródła 40/440 odpowiada X 20/420 w wycinku o początku (20,170).
+        self.assertTrue((pixels[10:15,20:40,:3]<30).all())
+        self.assertTrue((pixels[10:15,420:440,:3]<30).all())
+        blue=(pixels[:,:,0]<50)&(pixels[:,:,1]<150)&(pixels[:,:,2]>220)
+        self.assertTrue(blue[29:32,29:32].any())
+        self.assertTrue(blue[29:32,429:432].any())
+        self.assertEqual(question,original)
+        # Bez opcji pozostaje dotychczasowy, mały wycinek samego napisu.
+        self.assertLess(fitz.Pixmap(question_crop(png,question)).width,200)
+
+    def test_zoomable_fallback_line_crop_clips_to_source_and_keeps_full_span(self):
+        from auto_sketch import question_crop
+        png=drawing([(50,50),(450,50),(450,350),(50,350)])
+        question=dict(image_line=(260,10,260,410),source='missing_relation')
+        pix=fitz.Pixmap(question_crop(png,question,include_line=True))
+        self.assertEqual((pix.width,pix.height),(61,420))
+        pixels=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width,pix.n)
+        self.assertGreater(pixels[10,30,2],220)
+        self.assertLess(pixels[10,30,0],50)
+        self.assertGreater(pixels[409,30,2],220)
+        self.assertLess(pixels[409,30,0],50)
+        self.assertEqual(question['image_line'],(260,10,260,410))
+        self.assertIsNone(question_crop(png,dict(image_line=(900,900,1000,1000)),include_line=True))
+        self.assertIsNone(question_crop(png,dict(image_line=(0,0,float('nan'),100)),include_line=True))
+        self.assertIsNone(question_crop(png,dict(label_bounds=(0,0)),include_line=True))
+
+    def test_fallback_crop_keeps_source_vertices_beside_projected_line(self):
+        from copy import deepcopy
+        from auto_sketch import question_crop
+        with fitz.open() as doc:
+            page=doc.new_page(width=800,height=900)
+            # Końce relacji X/Y są na obrysie, obok rzutowanej linii.
+            page.draw_rect(fitz.Rect(478,336,482,340),color=(0,0,0),fill=(0,0,0))
+            page.draw_rect(fitz.Rect(654,812,658,816),color=(0,0,0),fill=(0,0,0))
+            png=page.get_pixmap(alpha=False).tobytes('png')
+        question=dict(image_line=(568,338,568,814),context_bounds=(480,338,656,814))
+        original=deepcopy(question)
+        pix=fitz.Pixmap(question_crop(png,question,include_line=True))
+        self.assertEqual((pix.width,pix.height),(237,537))
+        pixels=np.frombuffer(pix.samples,dtype=np.uint8).reshape(pix.height,pix.width,pix.n)
+        self.assertTrue((pixels[28:32,28:32,:3]<30).all())
+        self.assertTrue((pixels[504:508,204:208,:3]<30).all())
+        # context_bounds nie jest napisem OCR i nie tworzy pomarańczowej ramki.
+        orange=(pixels[:,:,0]>220)&(pixels[:,:,1]>70)&(pixels[:,:,1]<190)&(pixels[:,:,2]<60)
+        self.assertFalse(orange.any())
+        self.assertEqual(question,original)
+
 
 if __name__=='__main__':
     unittest.main()
